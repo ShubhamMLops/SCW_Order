@@ -1,6 +1,65 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
 const pino = require('pino');
+
+/**
+ * Renders QR exactly like WhatsApp Web does in terminal:
+ * Uses ▀ / ▄ / █ / space half-block chars so 2 QR rows = 1 terminal line.
+ * No extra packages — uses Baileys' built-in qrcode dependency.
+ */
+function printQRToTerminal(qrString) {
+    // Baileys already has 'qrcode' as its own dep — require it directly
+    const QRCode = require('@whiskeysockets/baileys/node_modules/qrcode') ||
+                   (() => { try { return require('qrcode'); } catch { return null; } })();
+
+    if (!QRCode) {
+        // Absolute fallback — plain qrcode-terminal
+        require('qrcode-terminal').generate(qrString, { small: true });
+        return;
+    }
+
+    const matrix = QRCode.create(qrString, { errorCorrectionLevel: 'H' });
+    const size   = matrix.modules.size;
+    const data   = matrix.modules.data;
+    const PAD    = 2; // quiet zone cells
+
+    // Helper: is cell dark?
+    const dark = (r, c) => {
+        if (r < 0 || r >= size || c < 0 || c >= size) return false;
+        return !!data[r * size + c];
+    };
+
+    // ANSI: reset, black fg, white fg
+    const RST  = '\x1b[0m';
+    const BLK  = '\x1b[30m'; // black foreground
+    const WHT  = '\x1b[97m'; // bright white foreground
+    const BGBLK = '\x1b[40m';
+    const BGWHT = '\x1b[107m';
+
+    const totalRows = size + PAD * 2;
+    let out = '\n';
+
+    // Process two rows at a time using upper-half block ▀
+    // top-dark  bot-dark  → char  fg      bg
+    // true      true      →  █   black   black   (full black)
+    // true      false     →  ▀   black   white   (top black)
+    // false     true      →  ▄   black   white   (bot black) — actually ▄ = lower half
+    // false     false     →  ' ' white   white   (full white)
+    for (let r = -PAD; r < size + PAD; r += 2) {
+        let line = BGWHT; // start with white bg for quiet zone
+        for (let c = -PAD; c < size + PAD; c++) {
+            const top = dark(r,     c);
+            const bot = dark(r + 1, c);
+
+            if (top && bot)        line += `${BGBLK}${BLK} ${RST}${BGWHT}`;  // full black → ▀ on black bg looks like full block
+            else if (top && !bot)  line += `${BLK}▀${RST}${BGWHT}`;          // top half black
+            else if (!top && bot)  line += `${BLK}▄${RST}${BGWHT}`;          // bottom half black
+            else                   line += ` `;                                // full white
+        }
+        out += line + RST + '\n';
+    }
+
+    console.log(out);
+}
 
 // 🌟 SECURE FIREBASE URL FROM GITHUB SECRETS 🌟
 const FIREBASE_URL = process.env.FIREBASE_URL;
@@ -50,9 +109,8 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('\n📱 Scan this QR with WhatsApp → Linked Devices:\n');
-            qrcode.generate(qr, { small: true });
-            console.log('\n⚠️  If QR looks broken → click "View raw logs" (top-right in Actions)\n');
+            console.log('\n📱 Scan with WhatsApp → Linked Devices:\n');
+            printQRToTerminal(qr);
         }
 
         if (connection === 'open') console.log('✅ ScwOrder AI IS ONLINE!');
