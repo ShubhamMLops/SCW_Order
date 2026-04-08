@@ -3,7 +3,7 @@ name: ScwOrder-WhatsApp-Bot
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *' 
+    - cron: '0 */5 * * *'
 
 jobs:
   build:
@@ -23,4 +23,5 @@ jobs:
       - name: Start AI Bot
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
+          PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
         run: npm start
