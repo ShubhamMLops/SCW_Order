@@ -1,12 +1,9 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const readline = require('readline');
+const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 
 // 🌟 SECURE FIREBASE URL FROM GITHUB SECRETS 🌟
 const FIREBASE_URL = process.env.FIREBASE_URL;
-// Your WhatsApp number with country code, no + or spaces (e.g. 919876543210)
-// Set this as a GitHub Secret: PHONE_NUMBER
-const PHONE_NUMBER = process.env.PHONE_NUMBER;
 
 const orderStates = {}; 
 
@@ -46,43 +43,18 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ["S", "K", "1"]
+        browser:["S", "K", "1"] 
     });
 
-    // ── PHONE NUMBER PAIRING (no QR needed) ──────────────────────────
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, isNewLogin } = update;
-
-        // Request pairing code once the socket is ready and not yet registered
-        if (isNewLogin || (!sock.authState.creds.registered && connection !== 'open')) {
-            let phone = PHONE_NUMBER;
-
-            // If no env var, ask interactively (local dev)
-            if (!phone) {
-                const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-                phone = await new Promise(resolve => {
-                    rl.question('📱 Enter your WhatsApp number (with country code, no + or spaces): ', ans => {
-                        rl.close();
-                        resolve(ans.trim());
-                    });
-                });
-            }
-
-            try {
-                const code = await sock.requestPairingCode(phone);
-                const formatted = code.match(/.{1,4}/g).join('-'); // e.g. ABCD-1234
-                console.log('\n╔══════════════════════════════════╗');
-                console.log('║   WhatsApp Pairing Code           ║');
-                console.log(`║   👉  ${formatted}  👈            ║`);
-                console.log('╠══════════════════════════════════╣');
-                console.log('║  1. Open WhatsApp on your phone   ║');
-                console.log('║  2. Settings → Linked Devices     ║');
-                console.log('║  3. Link with Phone Number        ║');
-                console.log('║  4. Enter the code above          ║');
-                console.log('╚══════════════════════════════════╝\n');
-            } catch (e) {
-                console.log('⚠️  Could not request pairing code:', e.message);
-            }
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+            console.clear(); 
+            console.log('\n==================================================');
+            console.log('⚠️ QR CODE TOO BIG? CLICK "View raw logs" in top right!');
+            console.log('==================================================\n');
+            qrcode.generate(qr, { small: true }); 
         }
 
         if (connection === 'open') console.log('✅ ScwOrder AI IS ONLINE!');
