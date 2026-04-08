@@ -1,34 +1,30 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const QRCode = require('qrcode');
-const http = require('http');
 const pino = require('pino');
 
-let qrServer = null;
-let latestQRHtml = '<p style="font-family:sans-serif;color:#888">Waiting for QR code…</p>';
+// Renders QR as solid Unicode block characters — crisp and scannable in any terminal
+async function printQR(qrString) {
+    const matrix = await QRCode.create(qrString, { errorCorrectionLevel: 'M' });
+    const size   = matrix.modules.size;
+    const data   = matrix.modules.data;
+    const BORDER = 3; // quiet zone (white padding) required by WhatsApp scanner
 
-// Tiny HTTP server — serves the latest QR as a webpage
-function startQRServer() {
-    if (qrServer) return;
-    qrServer = http.createServer((req, res) => {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(`<!DOCTYPE html><html><head>
-            <meta charset="UTF-8">
-            <meta http-equiv="refresh" content="10">
-            <title>ScwOrder — Scan QR</title>
-            <style>body{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#0a0603;font-family:sans-serif;color:#fef3c7;}
-            h2{margin-bottom:16px;}img{border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.5);}
-            p{margin-top:14px;color:#78716c;font-size:0.9em;}</style>
-        </head><body>
-            <h2>📱 Scan with WhatsApp</h2>
-            ${latestQRHtml}
-            <p>Page auto-refreshes every 10 seconds</p>
-        </body></html>`);
-    });
-    qrServer.listen(3000, () => {
-        console.log('\n🌐 QR Server running on port 3000');
-        console.log('   If using GitHub Actions, add a tunnel step to expose port 3000');
-        console.log('   Or copy the data URL printed below and paste it in your browser\n');
-    });
+    const W = '\x1b[47m  \x1b[0m'; // white cell
+    const B = '\x1b[40m  \x1b[0m'; // black cell
+
+    let out = '\n';
+    for (let r = -BORDER; r < size + BORDER; r++) {
+        let line = '';
+        for (let c = -BORDER; c < size + BORDER; c++) {
+            if (r < 0 || r >= size || c < 0 || c >= size) {
+                line += W;
+            } else {
+                line += data[r * size + c] ? B : W;
+            }
+        }
+        out += line + '\n';
+    }
+    console.log(out);
 }
 
 // 🌟 SECURE FIREBASE URL FROM GITHUB SECRETS 🌟
@@ -79,22 +75,8 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            QRCode.toDataURL(qr, { scale: 8, margin: 2, color: { dark: '#000000', light: '#ffffff' } }, (err, dataUrl) => {
-                if (err) { console.error('QR error:', err); return; }
-
-                // Update the served webpage
-                latestQRHtml = `<img src="${dataUrl}" width="300" height="300" alt="WhatsApp QR">`;
-                startQRServer();
-
-                // Also print the data URL to logs — paste it in browser address bar to view
-                console.log('\n══════════════════════════════════════════');
-                console.log('📱 SCAN QR — two options:');
-                console.log('   1. Open  http://localhost:3000  in browser (or tunnel URL)');
-                console.log('   2. Copy the data URL below → paste in browser address bar');
-                console.log('──────────────────────────────────────────');
-                console.log(dataUrl);
-                console.log('══════════════════════════════════════════\n');
-            });
+            console.log('\n📱 Scan the QR below with WhatsApp → Linked Devices:\n');
+            printQR(qr).catch(console.error);
         }
 
         if (connection === 'open') console.log('✅ ScwOrder AI IS ONLINE!');
