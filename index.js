@@ -55,7 +55,7 @@ async function startBot() {
             qrcode.generate(qr, { small: true }); 
         }
 
-        if (connection === 'open') console.log('✅ JAVAGOAT AI IS ONLINE!');
+        if (connection === 'open') console.log('✅ ScwOrder AI IS ONLINE!');
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
             if (reason !== DisconnectReason.loggedOut) startBot();
@@ -80,10 +80,10 @@ async function startBot() {
             const item = orderStates[sender].item;
             const customerWaNumber = sender.split('@')[0];
 
-            // Match the exact format of your JavaGoat Admin Panel
-            const javaGoatOrder = {
+            // Match the exact format of your ScwOrder Admin Panel
+            const ScwOrderOrder = {
                 userId: "whatsapp_" + customerWaNumber,
-                userEmail: "whatsapp@javagoat.com",
+                userEmail: "whatsapp@ScwOrder.com",
                 phone: customerWaNumber, // Keeps their WA number registered
                 address: customerDetails, // Saves Name, Phone, and Address typed by them
                 location: { lat: 0, lng: 0 },
@@ -105,13 +105,13 @@ async function startBot() {
                 await fetch(`${FIREBASE_URL}/orders.json`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(javaGoatOrder)
+                    body: JSON.stringify(ScwOrderOrder)
                 });
             } catch (error) {
                 console.log("Firebase Error: ", error);
             }
 
-            await sock.sendMessage(sender, { text: `✅ *Order Placed Successfully!* \n\nThank you! Your order for *${item.name}* is being prepared. \n\n*Total:* ₹${javaGoatOrder.total} (Inc. Delivery)\n*Status:* Preparing\n\nWe will deliver it to your address soon.` });
+            await sock.sendMessage(sender, { text: `✅ *Order Placed Successfully!* \n\nThank you! Your order for *${item.name}* is being prepared. \n\n*Total:* ₹${ScwOrderOrder.total} (Inc. Delivery)\n*Status:* Preparing\n\nWe will deliver it to your address soon.` });
             delete orderStates[sender]; 
             return;
         }
@@ -158,7 +158,7 @@ async function startBot() {
                 return;
             }
 
-            let menuMessage = "🍔 *JAVAGOAT LIVE MENU* 🍕\n\n";
+            let menuMessage = "🍔 *ScwOrder LIVE MENU* 🍕\n\n";
             currentMenu.forEach(item => {
                 menuMessage += `🔸 *${item.name}* - ₹${item.price}\n`;
             });
@@ -169,10 +169,10 @@ async function startBot() {
 
         // --- GREETINGS ---
         else if (text.includes("hi") || text.includes("hello") || text.includes("hey")) {
-            await sock.sendMessage(sender, { text: "👋 *Welcome to JavaGoat!* \n\nI am your AI Assistant. Type *menu* to see our delicious food, or type *order [dish]* to buy instantly!" });
+            await sock.sendMessage(sender, { text: "👋 *Welcome to ScwOrder!* \n\nI am your AI Assistant. Type *menu* to see our delicious food, or type *order [dish]* to buy instantly!" });
         }
         else if (text.includes("contact") || text.includes("call")) {
-            await sock.sendMessage(sender, { text: "📞 *Contact JavaGoat:* \n\n- *Email:* support@javagoat.com" });
+            await sock.sendMessage(sender, { text: "📞 *Contact ScwOrder:* \n\n- *Email:* support@ScwOrder.com" });
         }
         else {
             await sock.sendMessage(sender, { text: "🤔 I didn't quite catch that.\n\nType *menu* to see our food list, or *order [food]* to place an order!" });
