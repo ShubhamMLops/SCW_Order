@@ -138,7 +138,7 @@ async function startBot() {
         }
 
         // ── MENU — always accessible ──────────────────────────────────────────
-        if (text === 'menu' || text === 'price' || text === 'list' || text.includes('menu')) {
+        if (text === 'menu' || text === 'show menu' || text === 'price' || text === 'list' || /\bmenu\b/.test(text)) {
             const imgUrl = await getMenuImageUrl();
             const note = '\n\n_*Note:* GST is applicable on all orders. The final amount along with the QR code for payment will be shared with you after placing the order._';
             if (imgUrl) {
@@ -154,8 +154,8 @@ async function startBot() {
             return;
         }
 
-        // ── GREETINGS — always accessible ─────────────────────────────────────
-        if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
+        // ── GREETINGS — word boundary so "hi" doesn't match "chilli" ──────────
+        if (/\b(hi|hello|hey|hii|helo)\b/.test(text)) {
             await sock.sendMessage(sender, {
                 text: 'Welcome to ScwOrder!\n\nType *menu* to see our menu.\nThen just tell me what you want — e.g. _cheese pizza small_\n\nYou can add multiple items before checking out!'
             });
