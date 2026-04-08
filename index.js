@@ -57,11 +57,19 @@ async function startBot() {
             pairingCodeRequested = true;
             await new Promise(r => setTimeout(r, 3000));
             try {
-                // Strip non-digits, then prepend 91 (India) if not already present
+                // Strip non-digits only — user stores exactly what they want e.g. 919876543210
                 const digits = PHONE_NUMBER.trim().replace(/[^0-9]/g, '');
                 const phone  = digits.startsWith('91') ? digits : '91' + digits;
 
-                console.log('Requesting pairing code for: +' + phone + ' (' + phone.length + ' digits)');
+                // Print each part clearly so you can verify in logs
+                console.log('');
+                console.log('==========================================');
+                console.log('  Country Code : 91 (India)');
+                console.log('  Your Number  : ' + phone.slice(2));
+                console.log('  Full Number  : +' + phone);
+                console.log('  Digits Count : ' + phone.length + ' (must be 12)');
+                console.log('==========================================');
+                console.log('');
 
                 const code    = await sock.requestPairingCode(phone);
                 const display = code.match(/.{1,4}/g).join('-');
