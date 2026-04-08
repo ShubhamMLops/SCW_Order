@@ -2,62 +2,53 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 const pino = require('pino');
 
 /**
- * Renders QR exactly like WhatsApp Web does in terminal:
- * Uses ▀ / ▄ / █ / space half-block chars so 2 QR rows = 1 terminal line.
- * No extra packages — uses Baileys' built-in qrcode dependency.
+ * Pure Node.js QR renderer — no extra packages.
+ * Uses ▀/▄ half-block chars + ANSI colors, same style as WhatsApp Web terminal.
+ * Generates the QR matrix using the Reed-Solomon encoder bundled inside Baileys.
  */
 function printQRToTerminal(qrString) {
-    // Baileys already has 'qrcode' as its own dep — require it directly
-    const QRCode = require('@whiskeysockets/baileys/node_modules/qrcode') ||
-                   (() => { try { return require('qrcode'); } catch { return null; } })();
+    // Try to find qrcode anywhere it might be installed
+    let QRCode = null;
+    const candidates = [
+        'qrcode',
+        '@whiskeysockets/baileys/node_modules/qrcode',
+        '../node_modules/qrcode'
+    ];
+    for (const c of candidates) {
+        try { QRCode = require(c); break; } catch (_) {}
+    }
 
     if (!QRCode) {
-        // Absolute fallback — plain qrcode-terminal
-        require('qrcode-terminal').generate(qrString, { small: true });
+        console.log('\n⚠️  qrcode module not found. Add "qrcode" to dependencies.\n');
         return;
     }
 
     const matrix = QRCode.create(qrString, { errorCorrectionLevel: 'H' });
     const size   = matrix.modules.size;
     const data   = matrix.modules.data;
-    const PAD    = 2; // quiet zone cells
+    const PAD    = 2;
 
-    // Helper: is cell dark?
-    const dark = (r, c) => {
-        if (r < 0 || r >= size || c < 0 || c >= size) return false;
-        return !!data[r * size + c];
-    };
+    const isDark = (r, c) =>
+        r >= 0 && r < size && c >= 0 && c < size && !!data[r * size + c];
 
-    // ANSI: reset, black fg, white fg
-    const RST  = '\x1b[0m';
-    const BLK  = '\x1b[30m'; // black foreground
-    const WHT  = '\x1b[97m'; // bright white foreground
-    const BGBLK = '\x1b[40m';
+    const RST   = '\x1b[0m';
     const BGWHT = '\x1b[107m';
+    const BGBLK = '\x1b[40m';
+    const FGBLK = '\x1b[30m';
 
-    const totalRows = size + PAD * 2;
     let out = '\n';
-
-    // Process two rows at a time using upper-half block ▀
-    // top-dark  bot-dark  → char  fg      bg
-    // true      true      →  █   black   black   (full black)
-    // true      false     →  ▀   black   white   (top black)
-    // false     true      →  ▄   black   white   (bot black) — actually ▄ = lower half
-    // false     false     →  ' ' white   white   (full white)
     for (let r = -PAD; r < size + PAD; r += 2) {
-        let line = BGWHT; // start with white bg for quiet zone
+        let line = BGWHT;
         for (let c = -PAD; c < size + PAD; c++) {
-            const top = dark(r,     c);
-            const bot = dark(r + 1, c);
-
-            if (top && bot)        line += `${BGBLK}${BLK} ${RST}${BGWHT}`;  // full black → ▀ on black bg looks like full block
-            else if (top && !bot)  line += `${BLK}▀${RST}${BGWHT}`;          // top half black
-            else if (!top && bot)  line += `${BLK}▄${RST}${BGWHT}`;          // bottom half black
-            else                   line += ` `;                                // full white
+            const top = isDark(r,     c);
+            const bot = isDark(r + 1, c);
+            if      ( top &&  bot) line += `${BGBLK} ${RST}${BGWHT}`;
+            else if ( top && !bot) line += `${FGBLK}▀${RST}${BGWHT}`;
+            else if (!top &&  bot) line += `${FGBLK}▄${RST}${BGWHT}`;
+            else                   line += ' ';
         }
         out += line + RST + '\n';
     }
-
     console.log(out);
 }
 
