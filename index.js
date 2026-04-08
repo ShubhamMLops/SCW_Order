@@ -48,41 +48,54 @@ async function startBot() {
         browser: ["S", "K", "1"]
     });
 
+    let pairingCodeRequested = false;
+
     // Request pairing code once socket is ready and not yet registered
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, isNewLogin } = update;
+        const { connection, lastDisconnect } = update;
 
-        if (!sock.authState.creds.registered) {
+        // Only request once, and only when connection is 'open' or socket is connecting
+        if (!sock.authState.creds.registered && !pairingCodeRequested) {
+            pairingCodeRequested = true;
+
             if (!PHONE_NUMBER) {
                 console.log('❌ ERROR: PHONE_NUMBER secret is missing!');
                 console.log('   Add it in GitHub → Settings → Secrets → PHONE_NUMBER');
                 console.log('   Format: country code + number, no + or spaces (e.g. 919876543210)');
                 process.exit(1);
             }
+
+            // Wait for socket to fully initialize before requesting
+            await new Promise(r => setTimeout(r, 3000));
+
             try {
-                await new Promise(r => setTimeout(r, 2000)); // wait for socket to be ready
-                const code = await sock.requestPairingCode(PHONE_NUMBER.trim());
-                const display = code.match(/.{1,4}/g).join('-'); // e.g. ABCD-1234
+                const phone = PHONE_NUMBER.trim().replace(/[^0-9]/g, ''); // strip any stray chars
+                console.log(`\n🔄 Requesting pairing code for: ${phone}`);
+                const code = await sock.requestPairingCode(phone);
+                const display = code.match(/.{1,4}/g).join('-');
                 console.log('\n╔══════════════════════════════════════════╗');
                 console.log('║        WhatsApp Pairing Code             ║');
                 console.log('╠══════════════════════════════════════════╣');
                 console.log(`║   👉   ${display.padEnd(34)}║`);
                 console.log('╠══════════════════════════════════════════╣');
-                console.log('║  Steps:                                  ║');
                 console.log('║  1. Open WhatsApp on your phone          ║');
                 console.log('║  2. Tap  ⋮  → Linked Devices             ║');
                 console.log('║  3. Tap  Link with phone number          ║');
                 console.log('║  4. Enter the code above                 ║');
                 console.log('╚══════════════════════════════════════════╝\n');
             } catch (e) {
-                console.log('⚠️  Pairing code request failed:', e.message);
+                console.log('⚠️  Pairing code error:', e.message);
+                pairingCodeRequested = false; // allow retry on next update
             }
         }
 
         if (connection === 'open') console.log('✅ ScwOrder AI IS ONLINE!');
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
-            if (reason !== DisconnectReason.loggedOut) startBot();
+            if (reason !== DisconnectReason.loggedOut) {
+                pairingCodeRequested = false;
+                startBot();
+            }
         }
     });
 
