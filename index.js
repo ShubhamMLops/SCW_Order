@@ -69,8 +69,9 @@ async function startBot() {
             await new Promise(r => setTimeout(r, 3000));
 
             try {
-                const phone = PHONE_NUMBER.trim().replace(/[^0-9]/g, ''); // strip any stray chars
-                console.log(`\n🔄 Requesting pairing code for: ${phone}`);
+                const raw   = PHONE_NUMBER.trim().replace(/[^0-9]/g, '');
+                const phone = raw.startsWith('91') ? raw : `91${raw}`; // auto-prefix India code
+                console.log(`\n🔄 Requesting pairing code for: +${phone}`);
                 const code = await sock.requestPairingCode(phone);
                 const display = code.match(/.{1,4}/g).join('-');
                 console.log('\n╔══════════════════════════════════════════╗');
