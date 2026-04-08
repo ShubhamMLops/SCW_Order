@@ -1,0 +1,48 @@
+name: ScwOrder WhatsApp Bot
+
+on:
+  workflow_dispatch:   # Manual trigger from Actions tab
+  push:
+    branches: [main]
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60   # Keeps the bot alive up to 60 min per run
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install localtunnel (exposes port 3000 publicly)
+        run: npm install -g localtunnel
+
+      - name: Start bot + tunnel
+        env:
+          FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
+        run: |
+          # Start the bot in background
+          node index.js &
+          BOT_PID=$!
+
+          # Wait a moment for the QR server to start
+          sleep 5
+
+          # Start localtunnel — prints a public URL like https://xxxx.loca.lt
+          echo ""
+          echo "════════════════════════════════════════════"
+          echo "🌐 PUBLIC QR URL (open this in your browser)"
+          echo "════════════════════════════════════════════"
+          lt --port 3000 --print-requests &
+          LT_PID=$!
+
+          # Keep alive until bot exits or timeout
+          wait $BOT_PID
