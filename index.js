@@ -69,9 +69,13 @@ async function startBot() {
             await new Promise(r => setTimeout(r, 3000));
 
             try {
-                const phone = PHONE_NUMBER.trim().replace(/[^0-9]/g, '');
-                console.log(`\n🔄 Requesting pairing code for: +${phone}`);
-                console.log(`   (${phone.length} digits — should be 12 for India e.g. 919876543210)\n`);
+                const raw   = PHONE_NUMBER.trim().replace(/[^0-9]/g, '');
+                // Debug — shows what we actually received from the secret
+                console.log(`\n� RAW secret value (digits only): "${raw}"`);
+                console.log(`   Length: ${raw.length} digits`);
+
+                const phone = raw;
+                console.log(`🔄 Sending to WhatsApp: +${phone}\n`);
                 const code = await sock.requestPairingCode(phone);
                 const display = code.match(/.{1,4}/g).join('-');
                 console.log('\n╔══════════════════════════════════════════╗');
