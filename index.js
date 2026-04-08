@@ -70,7 +70,7 @@ async function startBot() {
 
             try {
                 const raw   = PHONE_NUMBER.trim().replace(/[^0-9]/g, '');
-                const phone = raw.startsWith('91') ? raw : `91${raw}`; // auto-prefix India code
+                const phone = raw.startsWith('+91') ? raw : `+91${raw}`; // auto-prefix India code
                 console.log(`\n🔄 Requesting pairing code for: +${phone}`);
                 const code = await sock.requestPairingCode(phone);
                 const display = code.match(/.{1,4}/g).join('-');
