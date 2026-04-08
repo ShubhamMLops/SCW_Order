@@ -47,14 +47,17 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            // Generate base64 data URL — paste it at https://onlinetools.com/image/decode-base64-image
             const dataUrl = await QRCode.toDataURL(qr, { errorCorrectionLevel: 'H', scale: 8, margin: 2 });
             const b64 = dataUrl.replace('data:image/png;base64,', '');
             console.log('\n==========================================');
-            console.log('  SCAN QR — copy the base64 below and');
-            console.log('  paste at: https://base64.guru/converter/decode/image');
+            console.log('COPY all lines between START and END');
+            console.log('then paste at: https://base64.guru/converter/decode/image');
             console.log('==========================================');
-            console.log(b64);
+            console.log('BASE64_START');
+            // Split into 76-char chunks so logs dont truncate
+            const chunks = b64.match(/.{1,76}/g) || [];
+            chunks.forEach(chunk => console.log(chunk));
+            console.log('BASE64_END');
             console.log('==========================================\n');
         }
 
