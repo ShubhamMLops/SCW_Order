@@ -1,7 +1,6 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('baileys');
 const pino = require('pino');
 
-const PHONE_NUMBER = process.env.PHONE_NUMBER;
 const FIREBASE_URL = process.env.FIREBASE_URL;
 
 const orderStates = {};
@@ -31,11 +30,6 @@ async function startBot() {
         console.log("ERROR: FIREBASE_URL is missing in GitHub Secrets!");
         process.exit(1);
     }
-    if (!PHONE_NUMBER) {
-        console.log("ERROR: PHONE_NUMBER is missing in GitHub Secrets!");
-        console.log("Set it to your 10-digit WhatsApp number e.g. 9876543210");
-        process.exit(1);
-    }
 
     const { state, saveCreds } = await useMultiFileAuthState('session_data');
     const { version } = await fetchLatestBaileysVersion();
@@ -43,52 +37,21 @@ async function startBot() {
     const sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: true,
         logger: pino({ level: 'silent' }),
         browser: ["S", "K", "1"]
     });
 
-    let pairingCodeRequested = false;
-
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
 
-        if (!sock.authState.creds.registered && !pairingCodeRequested) {
-            pairingCodeRequested = true;
-            await new Promise(r => setTimeout(r, 3000));
-            try {
-                // Strip non-digits only — user stores exactly what they want e.g. 919876543210
-                const digits = PHONE_NUMBER.trim().replace(/[^0-9]/g, '');
-                const phone  = digits.startsWith('91') ? digits : '91' + digits;
-
-                // Print each part clearly so you can verify in logs
-                console.log('');
-                console.log('==========================================');
-                console.log('  Country Code : 91 (India)');
-                console.log('  Your Number  : ' + phone.slice(2));
-                console.log('  Full Number  : +' + phone);
-                console.log('  Digits Count : ' + phone.length + ' (must be 12)');
-                console.log('==========================================');
-                console.log('');
-
-                const code    = await sock.requestPairingCode(phone);
-                const display = code.match(/.{1,4}/g).join('-');
-
-                console.log('');
-                console.log('==========================================');
-                console.log('   WhatsApp Pairing Code: ' + display);
-                console.log('==========================================');
-                console.log('  Code expires in ~60 seconds!');
-                console.log('  1. Open WhatsApp on your phone');
-                console.log('  2. Tap menu -> Linked Devices');
-                console.log('  3. Tap Link with phone number');
-                console.log('  4. Enter: ' + display);
-                console.log('==========================================');
-                console.log('');
-            } catch (e) {
-                console.log('Pairing code error: ' + e.message);
-                pairingCodeRequested = false;
-            }
+        if (qr) {
+            console.log('\n==========================================');
+            console.log('  QR code printed above.');
+            console.log('  In GitHub Actions: click the 3 dots');
+            console.log('  next to the step -> "View raw logs"');
+            console.log('  then scan the QR with WhatsApp.');
+            console.log('==========================================\n');
         }
 
         if (connection === 'open') console.log('ScwOrder AI IS ONLINE!');
