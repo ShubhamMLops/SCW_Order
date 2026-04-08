@@ -1,4 +1,5 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('baileys');
+const QRCode = require('qrcode');
 const pino = require('pino');
 
 const FIREBASE_URL = process.env.FIREBASE_URL;
@@ -37,7 +38,7 @@ async function startBot() {
     const sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: true,
+        printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: ["S", "K", "1"]
     });
@@ -46,11 +47,14 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
+            // Generate base64 data URL — paste it at https://onlinetools.com/image/decode-base64-image
+            const dataUrl = await QRCode.toDataURL(qr, { errorCorrectionLevel: 'H', scale: 8, margin: 2 });
+            const b64 = dataUrl.replace('data:image/png;base64,', '');
             console.log('\n==========================================');
-            console.log('  QR code printed above.');
-            console.log('  In GitHub Actions: click the 3 dots');
-            console.log('  next to the step -> "View raw logs"');
-            console.log('  then scan the QR with WhatsApp.');
+            console.log('  SCAN QR — copy the base64 below and');
+            console.log('  paste at: https://base64.guru/converter/decode/image');
+            console.log('==========================================');
+            console.log(b64);
             console.log('==========================================\n');
         }
 
