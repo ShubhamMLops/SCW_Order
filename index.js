@@ -1,17 +1,8 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const QRCode = require('qrcode');
 const pino = require('pino');
 
-// Prints QR using qrcode's utf8 renderer — solid █ blocks, works in any terminal/log
-async function printQR(qrString) {
-    const text = await QRCode.toString(qrString, {
-        type: 'utf8',
-        errorCorrectionLevel: 'M',
-        margin: 2
-    });
-    console.log('\n📱 Scan with WhatsApp → Settings → Linked Devices:\n');
-    console.log(text);
-}
+// Phone number from GitHub Secret — e.g. 919876543210 (country code + number, no + or spaces)
+const PHONE_NUMBER = process.env.PHONE_NUMBER;
 
 // 🌟 SECURE FIREBASE URL FROM GITHUB SECRETS 🌟
 const FIREBASE_URL = process.env.FIREBASE_URL;
@@ -54,14 +45,38 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser:["S", "K", "1"] 
+        browser: ["S", "K", "1"]
     });
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        
-        if (qr) {
-            printQR(qr).catch(console.error);
+    // Request pairing code once socket is ready and not yet registered
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, isNewLogin } = update;
+
+        if (!sock.authState.creds.registered) {
+            if (!PHONE_NUMBER) {
+                console.log('❌ ERROR: PHONE_NUMBER secret is missing!');
+                console.log('   Add it in GitHub → Settings → Secrets → PHONE_NUMBER');
+                console.log('   Format: country code + number, no + or spaces (e.g. 919876543210)');
+                process.exit(1);
+            }
+            try {
+                await new Promise(r => setTimeout(r, 2000)); // wait for socket to be ready
+                const code = await sock.requestPairingCode(PHONE_NUMBER.trim());
+                const display = code.match(/.{1,4}/g).join('-'); // e.g. ABCD-1234
+                console.log('\n╔══════════════════════════════════════════╗');
+                console.log('║        WhatsApp Pairing Code             ║');
+                console.log('╠══════════════════════════════════════════╣');
+                console.log(`║   👉   ${display.padEnd(34)}║`);
+                console.log('╠══════════════════════════════════════════╣');
+                console.log('║  Steps:                                  ║');
+                console.log('║  1. Open WhatsApp on your phone          ║');
+                console.log('║  2. Tap  ⋮  → Linked Devices             ║');
+                console.log('║  3. Tap  Link with phone number          ║');
+                console.log('║  4. Enter the code above                 ║');
+                console.log('╚══════════════════════════════════════════╝\n');
+            } catch (e) {
+                console.log('⚠️  Pairing code request failed:', e.message);
+            }
         }
 
         if (connection === 'open') console.log('✅ ScwOrder AI IS ONLINE!');
