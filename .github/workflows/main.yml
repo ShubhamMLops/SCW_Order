@@ -1,4 +1,4 @@
-name: JavaGoat-WhatsApp-Bot
+name: ScwOrder-WhatsApp-Bot
 
 on:
   workflow_dispatch:
