@@ -69,8 +69,9 @@ async function startBot() {
             await new Promise(r => setTimeout(r, 3000));
 
             try {
-                const phone = PHONE_NUMBER.trim().replace(/[^0-9]/g, ''); // strips + and spaces, keeps 919876543210
+                const phone = PHONE_NUMBER.trim().replace(/[^0-9]/g, '');
                 console.log(`\n🔄 Requesting pairing code for: +${phone}`);
+                console.log(`   (${phone.length} digits — should be 12 for India e.g. 919876543210)\n`);
                 const code = await sock.requestPairingCode(phone);
                 const display = code.match(/.{1,4}/g).join('-');
                 console.log('\n╔══════════════════════════════════════════╗');
@@ -78,10 +79,14 @@ async function startBot() {
                 console.log('╠══════════════════════════════════════════╣');
                 console.log(`║   👉   ${display.padEnd(34)}║`);
                 console.log('╠══════════════════════════════════════════╣');
+                console.log('║  ⚠️  Code expires in ~60 seconds!        ║');
+                console.log('║                                          ║');
                 console.log('║  1. Open WhatsApp on your phone          ║');
                 console.log('║  2. Tap  ⋮  → Linked Devices             ║');
                 console.log('║  3. Tap  Link with phone number          ║');
-                console.log('║  4. Enter the code above                 ║');
+                console.log('║  4. Enter the EXACT code above           ║');
+                console.log('║                                          ║');
+                console.log('║  ✅ Number must match your WhatsApp SIM  ║');
                 console.log('╚══════════════════════════════════════════╝\n');
             } catch (e) {
                 console.log('⚠️  Pairing code error:', e.message);
