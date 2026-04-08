@@ -137,6 +137,31 @@ async function startBot() {
             return;
         }
 
+        // ── MENU — always accessible ──────────────────────────────────────────
+        if (text === 'menu' || text === 'price' || text === 'list' || text.includes('menu')) {
+            const imgUrl = await getMenuImageUrl();
+            const note = '\n\n_*Note:* GST is applicable on all orders. The final amount along with the QR code for payment will be shared with you after placing the order._';
+            if (imgUrl) {
+                await sock.sendMessage(sender, {
+                    image: { url: imgUrl },
+                    caption: '*ScwOrder Menu*\n\nJust tell me what you want!\nExample: _cheese pizza small_ or _veg burger_\n\nType *done* to checkout. Type *cancel* to cancel.' + note
+                });
+            } else {
+                await sock.sendMessage(sender, {
+                    text: '*ScwOrder*\n\nTell me what you want to order!\nExample: _cheese pizza small_ or _veg burger_\n\nType *done* when finished. Type *cancel* to cancel.' + note
+                });
+            }
+            return;
+        }
+
+        // ── GREETINGS — always accessible ─────────────────────────────────────
+        if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
+            await sock.sendMessage(sender, {
+                text: 'Welcome to ScwOrder!\n\nType *menu* to see our menu.\nThen just tell me what you want — e.g. _cheese pizza small_\n\nYou can add multiple items before checking out!'
+            });
+            return;
+        }
+
         // ── WAITING FOR PORTION CHOICE ────────────────────────────────────────
         if (state?.step === 'WAITING_FOR_PORTION') {
             const { item, cart } = state;
@@ -227,31 +252,6 @@ async function startBot() {
                       'GST is applicable on this order, and the final amount along with the QR code for payment will be shared with you.\n' +
                       '-----------------------------------\n\n' +
                       'Please reply with your *Full Name, Phone Number & Delivery Address*.'
-            });
-            return;
-        }
-
-        // ── MENU ──────────────────────────────────────────────────────────────
-        if (text.includes('menu') || text.includes('price') || text.includes('list')) {
-            const imgUrl = await getMenuImageUrl();
-            const note = '\n\n_*Note:* GST is applicable on all orders. The final amount along with the QR code for payment will be shared with you after placing the order._';
-            if (imgUrl) {
-                await sock.sendMessage(sender, {
-                    image: { url: imgUrl },
-                    caption: '*ScwOrder Menu*\n\nJust tell me what you want!\nExample: _cheese pizza small_ or _veg burger_\n\nType *cancel* anytime to cancel.' + note
-                });
-            } else {
-                await sock.sendMessage(sender, {
-                    text: '*ScwOrder*\n\nTell me what you want to order!\nExample: _cheese pizza small_ or _veg burger_\n\nType *done* when finished adding items.' + note
-                });
-            }
-            return;
-        }
-
-        // ── GREETINGS ─────────────────────────────────────────────────────────
-        if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
-            await sock.sendMessage(sender, {
-                text: 'Welcome to ScwOrder!\n\nType *menu* to see our menu.\nThen just tell me what you want — e.g. _cheese pizza small_\n\nYou can add multiple items before checking out!'
             });
             return;
         }
