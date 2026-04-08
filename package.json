@@ -1,7 +1,7 @@
 {
-  "name": "javagoat-whatsapp-bot",
+  "name": "ScwOrder-whatsapp-bot",
   "version": "1.0.0",
-  "description": "WhatsApp Bot linked to JavaGoat App",
+  "description": "WhatsApp Bot linked to ScwOrder App",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
