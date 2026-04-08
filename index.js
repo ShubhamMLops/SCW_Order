@@ -1,55 +1,16 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const QRCode = require('qrcode');
 const pino = require('pino');
 
-/**
- * Pure Node.js QR renderer — no extra packages.
- * Uses ▀/▄ half-block chars + ANSI colors, same style as WhatsApp Web terminal.
- * Generates the QR matrix using the Reed-Solomon encoder bundled inside Baileys.
- */
-function printQRToTerminal(qrString) {
-    // Try to find qrcode anywhere it might be installed
-    let QRCode = null;
-    const candidates = [
-        'qrcode',
-        '@whiskeysockets/baileys/node_modules/qrcode',
-        '../node_modules/qrcode'
-    ];
-    for (const c of candidates) {
-        try { QRCode = require(c); break; } catch (_) {}
-    }
-
-    if (!QRCode) {
-        console.log('\n⚠️  qrcode module not found. Add "qrcode" to dependencies.\n');
-        return;
-    }
-
-    const matrix = QRCode.create(qrString, { errorCorrectionLevel: 'H' });
-    const size   = matrix.modules.size;
-    const data   = matrix.modules.data;
-    const PAD    = 2;
-
-    const isDark = (r, c) =>
-        r >= 0 && r < size && c >= 0 && c < size && !!data[r * size + c];
-
-    const RST   = '\x1b[0m';
-    const BGWHT = '\x1b[107m';
-    const BGBLK = '\x1b[40m';
-    const FGBLK = '\x1b[30m';
-
-    let out = '\n';
-    for (let r = -PAD; r < size + PAD; r += 2) {
-        let line = BGWHT;
-        for (let c = -PAD; c < size + PAD; c++) {
-            const top = isDark(r,     c);
-            const bot = isDark(r + 1, c);
-            if      ( top &&  bot) line += `${BGBLK} ${RST}${BGWHT}`;
-            else if ( top && !bot) line += `${FGBLK}▀${RST}${BGWHT}`;
-            else if (!top &&  bot) line += `${FGBLK}▄${RST}${BGWHT}`;
-            else                   line += ' ';
-        }
-        out += line + RST + '\n';
-    }
-    console.log(out);
+// Prints QR using qrcode's utf8 renderer — solid █ blocks, works in any terminal/log
+async function printQR(qrString) {
+    const text = await QRCode.toString(qrString, {
+        type: 'utf8',
+        errorCorrectionLevel: 'M',
+        margin: 2
+    });
+    console.log('\n📱 Scan with WhatsApp → Settings → Linked Devices:\n');
+    console.log(text);
 }
 
 // 🌟 SECURE FIREBASE URL FROM GITHUB SECRETS 🌟
@@ -100,8 +61,7 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('\n📱 Scan with WhatsApp → Linked Devices:\n');
-            printQRToTerminal(qr);
+            printQR(qr).catch(console.error);
         }
 
         if (connection === 'open') console.log('✅ ScwOrder AI IS ONLINE!');
