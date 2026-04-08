@@ -1,31 +1,6 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const QRCode = require('qrcode');
+const qrcode = require('qrcode-terminal');
 const pino = require('pino');
-
-// Renders QR as solid Unicode block characters — crisp and scannable in any terminal
-async function printQR(qrString) {
-    const matrix = await QRCode.create(qrString, { errorCorrectionLevel: 'M' });
-    const size   = matrix.modules.size;
-    const data   = matrix.modules.data;
-    const BORDER = 3; // quiet zone (white padding) required by WhatsApp scanner
-
-    const W = '\x1b[47m  \x1b[0m'; // white cell
-    const B = '\x1b[40m  \x1b[0m'; // black cell
-
-    let out = '\n';
-    for (let r = -BORDER; r < size + BORDER; r++) {
-        let line = '';
-        for (let c = -BORDER; c < size + BORDER; c++) {
-            if (r < 0 || r >= size || c < 0 || c >= size) {
-                line += W;
-            } else {
-                line += data[r * size + c] ? B : W;
-            }
-        }
-        out += line + '\n';
-    }
-    console.log(out);
-}
 
 // 🌟 SECURE FIREBASE URL FROM GITHUB SECRETS 🌟
 const FIREBASE_URL = process.env.FIREBASE_URL;
@@ -75,8 +50,9 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('\n📱 Scan the QR below with WhatsApp → Linked Devices:\n');
-            printQR(qr).catch(console.error);
+            console.log('\n📱 Scan this QR with WhatsApp → Linked Devices:\n');
+            qrcode.generate(qr, { small: true });
+            console.log('\n⚠️  If QR looks broken → click "View raw logs" (top-right in Actions)\n');
         }
 
         if (connection === 'open') console.log('✅ ScwOrder AI IS ONLINE!');
