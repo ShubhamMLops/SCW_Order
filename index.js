@@ -188,15 +188,25 @@ async function startBot() {
             if (!orders) return;
 
             for (const [key, order] of Object.entries(orders)) {
-                // Build JID — waNumber is 10-digit, needs 91 prefix for India
-                const rawNum = order.waNumber || order.phone || '';
-                const digits = rawNum.replace(/[^0-9]/g, '');
-                if (!digits || digits.length < 10) continue; // skip web orders with no valid WA number
-                const fullNum = digits.startsWith('91') ? digits : '91' + digits;
-                const waJid   = fullNum + '@s.whatsapp.net';
+                const needsAccept = order.accepted === true && !order.acceptedMsgSent && !sentMsgs.has(key + '_acc');
+                const needsReject = order.rejected === true && !order.rejectedMsgSent && !sentMsgs.has(key + '_rej');
+                if (!needsAccept && !needsReject) continue;
 
-                // Accepted
-                if (order.accepted === true && !order.acceptedMsgSent && !sentMsgs.has(key + '_acc')) {
+                // Build JID
+                const rawNum = String(order.waNumber || order.phone || '');
+                const digits = rawNum.replace(/[^0-9]/g, '');
+                console.log('Order ' + key + ' | waNumber=' + order.waNumber + ' phone=' + order.phone + ' digits=' + digits);
+
+                if (digits.length < 10) {
+                    console.log('Skipping — no valid number for order ' + key);
+                    continue;
+                }
+
+                const fullNum = digits.startsWith('91') && digits.length === 12 ? digits : '91' + digits.slice(-10);
+                const waJid   = fullNum + '@s.whatsapp.net';
+                console.log('Sending to JID: ' + waJid);
+
+                if (needsAccept) {
                     sentMsgs.add(key + '_acc');
                     try {
                         await sock.sendMessage(waJid, {
@@ -207,12 +217,11 @@ async function startBot() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ acceptedMsgSent: true })
                         });
-                        console.log('Accepted msg sent to ' + waJid);
-                    } catch (e) { console.log('Accept msg error:', e.message); }
+                        console.log('✅ Accept msg sent to ' + waJid);
+                    } catch (e) { console.log('Accept msg error: ' + e.message); sentMsgs.delete(key + '_acc'); }
                 }
 
-                // Rejected
-                if (order.rejected === true && !order.rejectedMsgSent && !sentMsgs.has(key + '_rej')) {
+                if (needsReject) {
                     sentMsgs.add(key + '_rej');
                     try {
                         await sock.sendMessage(waJid, {
@@ -223,11 +232,11 @@ async function startBot() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ rejectedMsgSent: true })
                         });
-                        console.log('Rejected msg sent to ' + waJid);
-                    } catch (e) { console.log('Reject msg error:', e.message); }
+                        console.log('❌ Reject msg sent to ' + waJid);
+                    } catch (e) { console.log('Reject msg error: ' + e.message); sentMsgs.delete(key + '_rej'); }
                 }
             }
-        } catch (e) { console.log('Poll error:', e.message); }
+        } catch (e) { console.log('Poll error: ' + e.message); }
     }, 5000);
 
     sock.ev.on('messages.upsert', async (m) => {
