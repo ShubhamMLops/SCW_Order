@@ -16,7 +16,9 @@ async function getMenu() {
         const res  = await fetch(`${FIREBASE_URL}/dishes.json`);
         const data = await res.json();
         if (!data) return [];
-        return Object.keys(data).map(k => ({ id: k, ...data[k], portions: data[k].portions || null }));
+        return Object.keys(data)
+            .map(k => ({ id: k, ...data[k], portions: data[k].portions || null }))
+            .filter(d => !d.outOfStock); // exclude out-of-stock items
     } catch (e) { console.error('Menu fetch error:', e); return []; }
 }
 
