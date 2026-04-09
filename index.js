@@ -352,6 +352,7 @@ async function startBot() {
                 text: `🛒 *Order Summary:*\n${cartLines(cart)}\n\n` +
                       `Subtotal: ₹${subtotal}\n\n` +
                       `_+5% GST applicable. Our chef will contact you for payment._\n\n` +
+                      `Delivery charges will apply if the order value is below ₹375 or if the delivery location is beyond 3 km.\n\n` +
                       `Please reply with your:\n*Name, Phone Number & Delivery Address*${warnMsg}`
             });
         }
