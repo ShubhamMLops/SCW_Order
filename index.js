@@ -180,6 +180,20 @@ async function startBot() {
                         });
                     } catch (e) { console.log('Accept msg error:', e.message); }
                 }
+                if (order.rejected === true && !order.rejectedMsgSent && !sentAcceptMsg.has(key + '_rej')) {
+                    sentAcceptMsg.add(key + '_rej');
+                    const waJid = (order.waNumber || order.phone) + '@s.whatsapp.net';
+                    try {
+                        await sock.sendMessage(waJid, {
+                            text: '❌ *Your order has been rejected.*\n\nWe\'re sorry, we are unable to process your order at this time. Please try again later or contact us directly.\n\nThank you for your understanding. 🙏'
+                        });
+                        await fetch(`${FIREBASE_URL}/orders/${key}.json`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ rejectedMsgSent: true })
+                        });
+                    } catch (e) { console.log('Reject msg error:', e.message); }
+                }
             }
         } catch (e) { console.log('Poll error:', e.message); }
     }, 5000);
@@ -274,8 +288,19 @@ async function startBot() {
 
             // Parse name, phone, address from the reply
             // Accept any free text — store as address, extract phone if present
+            // AFTER
             const phoneMatch = rawText.match(/(\+?91[\s-]?)?[6-9]\d{9}/);
-            const phone      = phoneMatch ? phoneMatch[0].replace(/\s|-/g, '') : waNumber;
+            let phone = phoneMatch ? phoneMatch[0].replace(/\s|-/g, '') : null;
+
+            // Strip country code to get bare 10-digit number
+            const bare = phone ? phone.replace(/^\+?91/, '') : '';
+            if (!phone || bare.length !== 10) {
+                await sock.sendMessage(sender, {
+                    text: '⚠️ Please include a valid *10-digit phone number* in your reply.\n\nExample:\n_Ravi, 9876543210, 12 MG Road, Bangalore_'
+                });
+                return; // stay in AWAITING_DETAILS step
+            }
+            phone = bare; // store clean 10-digit number
 
             const order = {
                 userId:    'whatsapp_' + waNumber,
