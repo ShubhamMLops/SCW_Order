@@ -158,25 +158,31 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Watch for orders accepted by admin — send WhatsApp confirmation
-    db.ref('orders').on('child_changed', async snap => {
-        const order = snap.val();
-        if (order.accepted === true && !order.acceptedMsgSent) {
-            const waJid = order.waNumber ? order.waNumber + '@s.whatsapp.net' : null;
-            if (waJid) {
-                try {
-                    await sock.sendMessage(waJid, {
-                        text: '✅ *Your order has been accepted!*\n\nOur chef is preparing your order. We will contact you shortly for payment details.\n\nThank you for ordering from ScwOrder! 🙏'
-                    });
-                    await fetch(`${FIREBASE_URL}/orders/${snap.key}.json`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ acceptedMsgSent: true })
-                    });
-                } catch (e) { console.log('Accept msg error:', e.message); }
+    // Poll every 5s for orders accepted by admin — send WhatsApp confirmation
+    const sentAcceptMsg = new Set();
+    setInterval(async () => {
+        try {
+            const res    = await fetch(`${FIREBASE_URL}/orders.json`);
+            const orders = await res.json();
+            if (!orders) return;
+            for (const [key, order] of Object.entries(orders)) {
+                if (order.accepted === true && !order.acceptedMsgSent && !sentAcceptMsg.has(key)) {
+                    sentAcceptMsg.add(key);
+                    const waJid = (order.waNumber || order.phone) + '@s.whatsapp.net';
+                    try {
+                        await sock.sendMessage(waJid, {
+                            text: '✅ *Your order has been accepted!*\n\nOur chef is preparing your order. We will contact you shortly for payment details.\n\nThank you for ordering from ScwOrder! 🙏'
+                        });
+                        await fetch(`${FIREBASE_URL}/orders/${key}.json`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ acceptedMsgSent: true })
+                        });
+                    } catch (e) { console.log('Accept msg error:', e.message); }
+                }
             }
-        }
-    });
+        } catch (e) { console.log('Poll error:', e.message); }
+    }, 5000);
 
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
