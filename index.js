@@ -26,38 +26,6 @@ async function getMenuFromApp() {
     }
 }
 
-// Fetch menu image URL saved by admin in Settings
-async function getMenuImageUrl() {
-    try {
-        const res  = await fetch(`${FIREBASE_URL}/settings.json`);
-        const data = await res.json();
-        return data?.menuImageUrl || null;
-    } catch { return null; }
-}
-
-// Match free-text like "cheese pizza small" against dishes+portions
-function matchOrder(input, menu) {
-    const q = input.toLowerCase();
-
-    for (const item of menu) {
-        if (!q.includes(item.name.toLowerCase())) continue;
-
-        // If dish has portions, try to match a portion name
-        if (item.portions && item.portions.length) {
-            for (const p of item.portions) {
-                if (q.includes(p.name.toLowerCase())) {
-                    return { item, portion: p };
-                }
-            }
-            // Dish matched but no portion specified — return dish so we can ask
-            return { item, portion: null };
-        }
-
-        return { item, portion: null };
-    }
-    return null;
-}
-
 async function startBot() {
     if (!FIREBASE_URL) {
         console.log("ERROR: FIREBASE_URL is missing in GitHub Secrets!");
@@ -172,62 +140,73 @@ async function startBot() {
             return;
         }
 
-        // ORDER — free text e.g. "cheese pizza small" or "order veg burger"
-        else if (text.startsWith('order ') || text === 'order') {
-            if (text === 'order') {
-                await sock.sendMessage(sender, { text: 'Just tell me what you want!\nExample: _cheese pizza small_ or _veg burger_\n\nType *menu* to see our menu.' });
-                return;
-            }
-            const query = text.replace(/^order\s+/i, '').trim();
+        // STEP 1: START ORDER
+        if (text.startsWith('order ')) {
+            const productRequested = text.replace('order ', '').trim().toLowerCase();
             const currentMenu = await getMenuFromApp();
-            const match = matchOrder(query, currentMenu);
+            const matchedItem = currentMenu.find(item => item.name.toLowerCase().includes(productRequested));
 
-            if (!match) {
-                await sock.sendMessage(sender, { text: 'Sorry, could not find that item.\n\nType *menu* to see our full menu, then tell me what you want.' });
+            if (!matchedItem) {
+                await sock.sendMessage(sender, { text: 'Sorry, we could not find *' + productRequested + '* in our menu.\n\nType *menu* to see all available items.' });
                 return;
             }
 
-            const { item, portion } = match;
-
-            if (item.portions && item.portions.length && !portion) {
-                // Dish found but size not specified — ask
-                orderStates[sender] = { step: 'WAITING_FOR_PORTION', item };
-                const opts = item.portions.map((p, i) => '  *' + (i + 1) + '.* ' + p.name + ' - Rs.' + p.price).join('\n');
-                const caption = '*' + item.name + '*\n\nWhich size would you like?\n\n' + opts + '\n\nReply with the number.';
-                if (item.imageUrl) {
-                    await sock.sendMessage(sender, { image: { url: item.imageUrl }, caption });
+            if (matchedItem.portions && matchedItem.portions.length) {
+                orderStates[sender] = { step: 'WAITING_FOR_PORTION', item: matchedItem };
+                const opts = matchedItem.portions.map((p, i) => '  *' + (i + 1) + '.* ' + p.name + ' - Rs.' + p.price).join('\n');
+                const caption = '*' + matchedItem.name + '*\n\nChoose your size — reply with the number:\n\n' + opts;
+                if (matchedItem.imageUrl) {
+                    await sock.sendMessage(sender, { image: { url: matchedItem.imageUrl }, caption });
                 } else {
                     await sock.sendMessage(sender, { text: caption });
                 }
             } else {
-                // Portion already matched or no portions — go to address
-                const selectedPortion = portion || null;
-                orderStates[sender] = { step: 'WAITING_FOR_ADDRESS', item: { ...item, selectedPortion } };
-                const price   = selectedPortion ? selectedPortion.price : item.price;
-                const label   = selectedPortion ? item.name + ' (' + selectedPortion.name + ')' : item.name;
-                const caption = '*Order Started!*\n\n' + label + ' - Rs.' + price + '\nDelivery: Rs.50\n*Total: Rs.' + (parseFloat(price) + 50).toFixed(0) + '*\n\nPlease reply with your *Full Name, Phone Number, and Delivery Address*.';
-                if (item.imageUrl) {
-                    await sock.sendMessage(sender, { image: { url: item.imageUrl }, caption });
+                orderStates[sender] = { step: 'WAITING_FOR_ADDRESS', item: matchedItem };
+                const caption = '*Order Started!*\n\nYou selected: *' + matchedItem.name + '* - Rs.' + matchedItem.price + '\n\nPlease reply with your *Full Name, Phone Number, and Delivery Address*.';
+                if (matchedItem.imageUrl) {
+                    await sock.sendMessage(sender, { image: { url: matchedItem.imageUrl }, caption });
                 } else {
                     await sock.sendMessage(sender, { text: caption });
                 }
             }
+        }
+        else if (text === 'order') {
+            await sock.sendMessage(sender, { text: "How to order:\nType 'order' followed by the dish name.\nExample: *order pizza*" });
         }
         else if (text.includes('menu') || text.includes('price') || text.includes('list') || text.includes('food')) {
-            const menuImageUrl = await getMenuImageUrl();
-            if (menuImageUrl) {
-                await sock.sendMessage(sender, {
-                    image: { url: menuImageUrl },
-                    caption: '*ScwOrder Menu*\n\nTo order, just type what you want!\nExample: _cheese pizza small_ or _veg burger_'
-                });
-            } else {
-                await sock.sendMessage(sender, {
-                    text: 'Menu image not set yet. Please contact us or type *order [dish name]* to place an order.'
-                });
+            const currentMenu = await getMenuFromApp();
+            if (currentMenu.length === 0) {
+                await sock.sendMessage(sender, { text: 'Menu is currently empty. Please check back soon!' });
+                return;
             }
+
+            const grouped = {};
+            currentMenu.forEach(item => {
+                const cat = (item.category || 'Other').charAt(0).toUpperCase() + item.category.slice(1);
+                if (!grouped[cat]) grouped[cat] = [];
+                grouped[cat].push(item);
+            });
+
+            const catEmojis = { Pizza:'pizza', Burger:'burger', Coffee:'coffee', Sweet:'sweet', Chinese:'chinese', Biryani:'biryani', Momo:'momo', Sandwich:'sandwich', Fries:'fries', Beverage:'drink', Shake:'shake', Other:'food' };
+
+            let menuMessage = '*ScwOrder - Live Menu*\n' + '-'.repeat(28) + '\n\n';
+            Object.entries(grouped).forEach(([cat, items]) => {
+                menuMessage += '*' + cat.toUpperCase() + '*\n';
+                items.forEach(item => {
+                    if (item.portions && item.portions.length) {
+                        const sizes = item.portions.map(p => p.name + ' Rs.' + p.price).join(' | ');
+                        menuMessage += '  - *' + item.name + '*\n    ' + sizes + '\n';
+                    } else {
+                        menuMessage += '  - *' + item.name + '* - Rs.' + item.price + '\n';
+                    }
+                });
+                menuMessage += '\n';
+            });
+            menuMessage += '-'.repeat(28) + '\nReply *order [dish name]* to order\nExample: order pizza';
+            await sock.sendMessage(sender, { text: menuMessage });
         }
         else if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
-            await sock.sendMessage(sender, { text: 'Welcome to ScwOrder!\n\nType *menu* to see our menu image, then just tell me what you want!\nExample: _cheese pizza small_ or _veg burger_' });
+            await sock.sendMessage(sender, { text: 'Welcome to ScwOrder!\n\nType *menu* to see our food, or *order [dish]* to order instantly!' });
         }
         else if (text.includes('contact') || text.includes('call')) {
             await sock.sendMessage(sender, { text: 'Contact ScwOrder:\nEmail: support@ScwOrder.com' });
