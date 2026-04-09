@@ -1,73 +1,158 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('baileys');
 const QRCode = require('qrcode');
-const pino = require('pino');
+const pino   = require('pino');
 
 const FIREBASE_URL = process.env.FIREBASE_URL;
+const DELIVERY_FEE = 50;
+const GST_RATE     = 0.05;
 
-const orderStates = {};
+// per-sender session
+const sessions = {};
 
-async function getMenuFromApp() {
+// ── Firebase helpers ──────────────────────────────────────────────────────────
+
+async function getMenu() {
     try {
-        const response = await fetch(`${FIREBASE_URL}/dishes.json`);
-        const data = await response.json();
+        const res  = await fetch(`${FIREBASE_URL}/dishes.json`);
+        const data = await res.json();
         if (!data) return [];
-        return Object.keys(data).map(key => ({
-            id: key,
-            name: data[key].name,
-            price: data[key].price,
-            imageUrl: data[key].imageUrl,
-            category: data[key].category || 'Other',
-            description: data[key].description || '',
-            portions: data[key].portions || null
-        }));
-    } catch (error) {
-        console.error("Failed to fetch menu:", error);
-        return [];
-    }
+        return Object.keys(data).map(k => ({ id: k, ...data[k], portions: data[k].portions || null }));
+    } catch (e) { console.error('Menu fetch error:', e); return []; }
 }
 
-async function startBot() {
-    if (!FIREBASE_URL) {
-        console.log("ERROR: FIREBASE_URL is missing in GitHub Secrets!");
-        process.exit(1);
+// ── Menu text builder ─────────────────────────────────────────────────────────
+
+function buildMenuText(menu) {
+    const grouped = {};
+    menu.forEach(d => {
+        const cat = (d.category || 'other').charAt(0).toUpperCase() + (d.category || 'other').slice(1);
+        if (!grouped[cat]) grouped[cat] = [];
+        grouped[cat].push(d);
+    });
+
+    let txt = '*🍽 ScwOrder — Menu*\n' + '─'.repeat(30) + '\n\n';
+    Object.entries(grouped).forEach(([cat, items]) => {
+        txt += `*${cat.toUpperCase()}*\n`;
+        items.forEach(d => {
+            if (d.portions && d.portions.length) {
+                const sizes = d.portions.map(p => `${p.name} ₹${p.price}`).join(' | ');
+                txt += `  • *${d.name}*  ${sizes}\n`;
+            } else {
+                txt += `  • *${d.name}* — ₹${d.price || '—'}\n`;
+            }
+        });
+        txt += '\n';
+    });
+    txt += '─'.repeat(30) + '\n';
+    txt += 'Just type what you want!\n';
+    txt += '_Example: cheese pizza small_\n';
+    txt += '_Example: veg burger + steam veg momos_\n\n';
+    txt += '_*Note:* +5% GST applicable. Our chef will contact you for payment._';
+    return txt;
+}
+
+// ── Order parser ──────────────────────────────────────────────────────────────
+// Parses "cheese pizza small + veg burger + steam veg momos" into cart items
+// Returns { resolved: [{item, portion}], unresolved: [string] }
+
+function parseOrder(input, menu) {
+    // Split on + or "and"
+    const parts = input.split(/\s*\+\s*|\s+and\s+/i).map(p => p.trim()).filter(Boolean);
+    const resolved   = [];
+    const unresolved = [];
+
+    const sizeAliases = {
+        small: ['small','s','sm'], medium: ['medium','m','med'], large: ['large','l','lg']
+    };
+
+    for (const part of parts) {
+        const q = part.toLowerCase();
+        // Sort dishes by name length desc so longer names match first
+        const sorted = [...menu].sort((a, b) => b.name.length - a.name.length);
+        let matched = false;
+
+        for (const item of sorted) {
+            if (!q.includes(item.name.toLowerCase())) continue;
+
+            if (item.portions && item.portions.length) {
+                let foundPortion = null;
+                for (const p of item.portions) {
+                    const pName = p.name.toLowerCase();
+                    const aliases = sizeAliases[pName] || [pName];
+                    if (aliases.some(a => {
+                        // match as whole word
+                        const re = new RegExp('\\b' + a + '\\b');
+                        return re.test(q);
+                    })) {
+                        foundPortion = p;
+                        break;
+                    }
+                }
+                resolved.push({ item, portion: foundPortion, needsPortion: !foundPortion });
+            } else {
+                resolved.push({ item, portion: null, needsPortion: false });
+            }
+            matched = true;
+            break;
+        }
+        if (!matched) unresolved.push(part);
     }
+    return { resolved, unresolved };
+}
+
+// ── Bill calculator ───────────────────────────────────────────────────────────
+
+function calcBill(cart) {
+    const subtotal = cart.reduce((sum, e) => {
+        const price = e.portion ? parseFloat(e.portion.price) : parseFloat(e.item.price || 0);
+        return sum + price;
+    }, 0);
+    const gst      = Math.round(subtotal * GST_RATE);
+    const total    = subtotal + gst + DELIVERY_FEE;
+    return { subtotal, gst, total };
+}
+
+function cartLines(cart) {
+    return cart.map((e, i) => {
+        const label = e.portion ? `${e.item.name} (${e.portion.name})` : e.item.name;
+        const price = e.portion ? e.portion.price : e.item.price;
+        return `${i + 1}. ${label} — ₹${price}`;
+    }).join('\n');
+}
+
+// ── Bot ───────────────────────────────────────────────────────────────────────
+
+async function startBot() {
+    if (!FIREBASE_URL) { console.log('ERROR: FIREBASE_URL missing!'); process.exit(1); }
 
     const { state, saveCreds } = await useMultiFileAuthState('session_data');
-    const { version } = await fetchLatestBaileysVersion();
+    const { version }          = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
-        version,
-        auth: state,
+        version, auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ["S", "K", "1"]
+        browser: ['S', 'K', '1']
     });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-
         if (qr) {
             const dataUrl = await QRCode.toDataURL(qr, { errorCorrectionLevel: 'H', scale: 8, margin: 2 });
-            const b64 = dataUrl.replace('data:image/png;base64,', '');
+            const b64     = dataUrl.replace('data:image/png;base64,', '');
             console.log('\n==========================================');
-            console.log('COPY all lines between START and END');
-            console.log('then paste at: https://base64.guru/converter/decode/image');
+            console.log('COPY lines between START/END, remove newlines,');
+            console.log('paste at: https://base64.guru/converter/decode/image');
             console.log('==========================================');
             console.log('BASE64_START');
-            // Split into 76-char chunks so logs dont truncate
-            const chunks = b64.match(/.{1,76}/g) || [];
-            chunks.forEach(chunk => console.log(chunk));
+            (b64.match(/.{1,76}/g) || []).forEach(c => console.log(c));
             console.log('BASE64_END');
             console.log('==========================================\n');
         }
-
-        if (connection === 'open') console.log('ScwOrder AI IS ONLINE!');
+        if (connection === 'open')  console.log('ScwOrder AI IS ONLINE!');
         if (connection === 'close') {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            if (reason !== DisconnectReason.loggedOut) {
-                pairingCodeRequested = false;
-                startBot();
-            }
+            const code = lastDisconnect?.error?.output?.statusCode;
+            if (code !== DisconnectReason.loggedOut) startBot();
         }
     });
 
@@ -78,50 +163,108 @@ async function startBot() {
         if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
         if (msg.key.fromMe) return;
 
-        const sender = msg.key.remoteJid;
-        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").toLowerCase();
+        const sender  = msg.key.remoteJid;
+        const rawText = (msg.message.conversation || msg.message.extendedTextMessage?.text || '');
+        const text    = rawText.toLowerCase().trim();
+        const session = sessions[sender] || {};
 
-        console.log('Query: ' + text);
+        console.log(`[${sender.split('@')[0]}]: ${text}`);
 
-        // STEP: WAITING FOR PORTION SELECTION
-        if (orderStates[sender]?.step === 'WAITING_FOR_PORTION') {
-            const item = orderStates[sender].item;
-            const portions = item.portions;
-            const choice = parseInt(text.trim());
+        // ── CANCEL ────────────────────────────────────────────────────────────
+        if (text === 'cancel') {
+            delete sessions[sender];
+            await sock.sendMessage(sender, { text: '❌ Order cancelled. Type *menu* to start again.' });
+            return;
+        }
 
-            if (isNaN(choice) || choice < 1 || choice > portions.length) {
-                const opts = portions.map((p, i) => '  *' + (i + 1) + '.* ' + p.name + ' - Rs.' + p.price).join('\n');
-                await sock.sendMessage(sender, { text: 'Please reply with a number between 1 and ' + portions.length + '.\n\n' + opts });
+        // ── MENU ──────────────────────────────────────────────────────────────
+        if (/\bmenu\b/.test(text) || text === 'price' || text === 'list') {
+            const menu = await getMenu();
+            if (!menu.length) {
+                await sock.sendMessage(sender, { text: 'Menu is currently empty. Please check back soon!' });
                 return;
             }
+            await sock.sendMessage(sender, { text: buildMenuText(menu) });
+            return;
+        }
 
-            const selectedPortion = portions[choice - 1];
-            orderStates[sender] = { step: 'WAITING_FOR_ADDRESS', item: { ...item, selectedPortion } };
+        // ── GREETINGS ─────────────────────────────────────────────────────────
+        if (/^(hi|hello|hey|hii|helo|namaste)$/i.test(text)) {
             await sock.sendMessage(sender, {
-                text: '*' + selectedPortion.name + '* selected (Rs.' + selectedPortion.price + ')\n\nNow please reply with your *Full Name, Phone Number, and Delivery Address*.'
+                text: '👋 *Welcome to ScwOrder!*\n\nType *menu* to see our full menu.\n\nThen just tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + steam veg momos_'
             });
             return;
         }
 
-        // STEP: WAITING FOR ADDRESS
-        if (orderStates[sender]?.step === 'WAITING_FOR_ADDRESS') {
-            const customerDetails = text;
-            const item = orderStates[sender].item;
-            const customerWaNumber = sender.split('@')[0];
-            const portion   = item.selectedPortion || null;
-            const itemPrice = portion ? portion.price : parseFloat(item.price);
-            const itemLabel = portion ? item.name + ' (' + portion.name + ')' : item.name;
+        // ── WAITING FOR PORTION on a specific pending item ────────────────────
+        if (session.step === 'AWAITING_PORTION') {
+            const { pendingItem, cart } = session;
+            const choice = parseInt(text);
+            const portions = pendingItem.portions;
+
+            if (isNaN(choice) || choice < 1 || choice > portions.length) {
+                const opts = portions.map((p, i) => `  ${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                await sock.sendMessage(sender, { text: `Please reply with a number 1–${portions.length}:\n\n${opts}` });
+                return;
+            }
+
+            const portion = portions[choice - 1];
+            cart.push({ item: pendingItem, portion });
+
+            // Check if there are more items needing portions
+            const nextPending = session.pendingItems?.shift();
+            if (nextPending) {
+                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: nextPending, pendingItems: session.pendingItems, cart };
+                const opts = nextPending.portions.map((p, i) => `  ${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                await sock.sendMessage(sender, { text: `✅ Added!\n\nNow, which size for *${nextPending.name}*?\n\n${opts}` });
+            } else {
+                // All portions resolved — ask for details
+                sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+                const { subtotal, gst, total } = calcBill(cart);
+                await sock.sendMessage(sender, {
+                    text: `✅ *${portion.name} ${pendingItem.name}* added!\n\n` +
+                          `*Your Order:*\n${cartLines(cart)}\n\n` +
+                          `Subtotal: ₹${subtotal}\nGST (5%): ₹${gst}\nDelivery: ₹${DELIVERY_FEE}\n*Total: ₹${total}*\n\n` +
+                          `Please reply with your:\n*Name, Phone Number & Delivery Address*`
+                });
+            }
+            return;
+        }
+
+        // ── WAITING FOR CUSTOMER DETAILS ──────────────────────────────────────
+        if (session.step === 'AWAITING_DETAILS') {
+            const { cart } = session;
+            const waNumber = sender.split('@')[0];
+            const { subtotal, gst, total } = calcBill(cart);
+
+            const orderItems = cart.map(e => ({
+                id:       e.item.id,
+                name:     e.portion ? `${e.item.name} (${e.portion.name})` : e.item.name,
+                price:    e.portion ? parseFloat(e.portion.price) : parseFloat(e.item.price || 0),
+                img:      (e.item.imageUrl && e.item.imageUrl.startsWith('http')) ? e.item.imageUrl : '',
+                quantity: 1,
+                portion:  e.portion ? e.portion.name : null
+            }));
+
+            // Parse name, phone, address from the reply
+            // Accept any free text — store as address, extract phone if present
+            const phoneMatch = rawText.match(/(\+?91[\s-]?)?[6-9]\d{9}/);
+            const phone      = phoneMatch ? phoneMatch[0].replace(/\s|-/g, '') : waNumber;
 
             const order = {
-                userId: 'whatsapp_' + customerWaNumber,
+                userId:    'whatsapp_' + waNumber,
                 userEmail: 'whatsapp@ScwOrder.com',
-                phone: customerWaNumber,
-                address: customerDetails,
-                location: { lat: 0, lng: 0 },
-                items: [{ id: item.id, name: itemLabel, price: itemPrice, img: item.imageUrl || '', quantity: 1, portion: portion ? portion.name : null }],
-                total: (itemPrice + 50).toFixed(2),
-                status: 'Placed',
-                method: 'Cash on Delivery (WhatsApp)',
+                phone,
+                waNumber,
+                address:   rawText,
+                location:  { lat: 0, lng: 0 },
+                items:     orderItems,
+                subtotal:  subtotal.toFixed(2),
+                gst:       gst.toFixed(2),
+                deliveryFee: DELIVERY_FEE,
+                total:     total.toFixed(2),
+                status:    'Placed',
+                method:    'WhatsApp Order',
                 timestamp: new Date().toISOString()
             };
 
@@ -131,90 +274,62 @@ async function startBot() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(order)
                 });
-            } catch (e) { console.log('Firebase Error: ' + e); }
+            } catch (e) { console.log('Firebase Error:', e); }
 
+            delete sessions[sender];
             await sock.sendMessage(sender, {
-                text: '*Order Placed!*\n\nItem: ' + itemLabel + '\nTotal: Rs.' + order.total + ' (incl. Rs.50 delivery)\nAddress: ' + customerDetails + '\nStatus: Preparing\n\nThank you!'
+                text: `✅ *Order Placed!*\n\n` +
+                      `*Items:*\n${cartLines(cart)}\n\n` +
+                      `Subtotal: ₹${subtotal}\nGST (5%): ₹${gst}\nDelivery: ₹${DELIVERY_FEE}\n*Total: ₹${total}*\n\n` +
+                      `📍 Address: ${rawText}\n\n` +
+                      `_Our chef will contact you shortly for payment. Final amount with QR code will be shared with you._\n\n` +
+                      `Thank you for ordering from ScwOrder! 🙏`
             });
-            delete orderStates[sender];
             return;
         }
 
-        // STEP 1: START ORDER
-        if (text.startsWith('order ')) {
-            const productRequested = text.replace('order ', '').trim().toLowerCase();
-            const currentMenu = await getMenuFromApp();
-            const matchedItem = currentMenu.find(item => item.name.toLowerCase().includes(productRequested));
+        // ── FREE-TEXT ORDER MATCHING ──────────────────────────────────────────
+        const menu  = await getMenu();
+        const { resolved, unresolved } = parseOrder(text, menu);
 
-            if (!matchedItem) {
-                await sock.sendMessage(sender, { text: 'Sorry, we could not find *' + productRequested + '* in our menu.\n\nType *menu* to see all available items.' });
-                return;
-            }
-
-            if (matchedItem.portions && matchedItem.portions.length) {
-                orderStates[sender] = { step: 'WAITING_FOR_PORTION', item: matchedItem };
-                const opts = matchedItem.portions.map((p, i) => '  *' + (i + 1) + '.* ' + p.name + ' - Rs.' + p.price).join('\n');
-                const caption = '*' + matchedItem.name + '*\n\nChoose your size — reply with the number:\n\n' + opts;
-                if (matchedItem.imageUrl) {
-                    await sock.sendMessage(sender, { image: { url: matchedItem.imageUrl }, caption });
-                } else {
-                    await sock.sendMessage(sender, { text: caption });
-                }
-            } else {
-                orderStates[sender] = { step: 'WAITING_FOR_ADDRESS', item: matchedItem };
-                const caption = '*Order Started!*\n\nYou selected: *' + matchedItem.name + '* - Rs.' + matchedItem.price + '\n\nPlease reply with your *Full Name, Phone Number, and Delivery Address*.';
-                if (matchedItem.imageUrl) {
-                    await sock.sendMessage(sender, { image: { url: matchedItem.imageUrl }, caption });
-                } else {
-                    await sock.sendMessage(sender, { text: caption });
-                }
-            }
-        }
-        else if (text === 'order') {
-            await sock.sendMessage(sender, { text: "How to order:\nType 'order' followed by the dish name.\nExample: *order pizza*" });
-        }
-        else if (text.includes('menu') || text.includes('price') || text.includes('list') || text.includes('food')) {
-            const currentMenu = await getMenuFromApp();
-            if (currentMenu.length === 0) {
-                await sock.sendMessage(sender, { text: 'Menu is currently empty. Please check back soon!' });
-                return;
-            }
-
-            const grouped = {};
-            currentMenu.forEach(item => {
-                const cat = (item.category || 'Other').charAt(0).toUpperCase() + item.category.slice(1);
-                if (!grouped[cat]) grouped[cat] = [];
-                grouped[cat].push(item);
+        if (!resolved.length) {
+            await sock.sendMessage(sender, {
+                text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + momos_`
             });
+            return;
+        }
 
-            const catEmojis = { Pizza:'pizza', Burger:'burger', Coffee:'coffee', Sweet:'sweet', Chinese:'chinese', Biryani:'biryani', Momo:'momo', Sandwich:'sandwich', Fries:'fries', Beverage:'drink', Shake:'shake', Other:'food' };
+        // Warn about unrecognised items
+        let warnMsg = '';
+        if (unresolved.length) {
+            warnMsg = `\n\n⚠️ Could not find: _${unresolved.join(', ')}_\nPlease check the menu and try again.`;
+        }
 
-            let menuMessage = '*ScwOrder - Live Menu*\n' + '-'.repeat(28) + '\n\n';
-            Object.entries(grouped).forEach(([cat, items]) => {
-                menuMessage += '*' + cat.toUpperCase() + '*\n';
-                items.forEach(item => {
-                    if (item.portions && item.portions.length) {
-                        const sizes = item.portions.map(p => p.name + ' Rs.' + p.price).join(' | ');
-                        menuMessage += '  - *' + item.name + '*\n    ' + sizes + '\n';
-                    } else {
-                        menuMessage += '  - *' + item.name + '* - Rs.' + item.price + '\n';
-                    }
-                });
-                menuMessage += '\n';
+        // Separate items that need portion selection
+        const needsPortion = resolved.filter(e => e.needsPortion);
+        const readyItems   = resolved.filter(e => !e.needsPortion);
+
+        const cart = [...(session.cart || []), ...readyItems];
+
+        if (needsPortion.length) {
+            const first = needsPortion.shift();
+            sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
+            const opts = first.item.portions.map((p, i) => `  ${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+            await sock.sendMessage(sender, {
+                text: `Which size for *${first.item.name}*?\n\n${opts}${warnMsg}`
             });
-            menuMessage += '-'.repeat(28) + '\nReply *order [dish name]* to order\nExample: order pizza';
-            await sock.sendMessage(sender, { text: menuMessage });
-        }
-        else if (text.includes('hi') || text.includes('hello') || text.includes('hey')) {
-            await sock.sendMessage(sender, { text: 'Welcome to ScwOrder!\n\nType *menu* to see our food, or *order [dish]* to order instantly!' });
-        }
-        else if (text.includes('contact') || text.includes('call')) {
-            await sock.sendMessage(sender, { text: 'Contact ScwOrder:\nEmail: support@ScwOrder.com' });
-        }
-        else {
-            await sock.sendMessage(sender, { text: "Type *menu* to see our food list, or *order [food]* to place an order!" });
+        } else {
+            // All items ready — show cart and ask for details
+            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+            const { subtotal, gst, total } = calcBill(cart);
+            await sock.sendMessage(sender, {
+                text: `🛒 *Order Summary:*\n${cartLines(cart)}\n\n` +
+                      `Subtotal: ₹${subtotal}\nGST (5%): ₹${gst}\nDelivery: ₹${DELIVERY_FEE}\n*Total: ₹${total}*\n\n` +
+                      `_+5% GST applicable. Our chef will contact you for payment._\n\n` +
+                      `Please reply with your:\n*Name, Phone Number & Delivery Address*${warnMsg}`
+            });
         }
     });
 }
 
-startBot().catch(err => console.log("Error: " + err));
+startBot().catch(err => console.log('Error:', err));
