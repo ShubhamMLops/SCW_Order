@@ -52,8 +52,12 @@ function buildMenuText(menu) {
 }
 
 // ── Order parser ──────────────────────────────────────────────────────────────
-// Parses "cheese pizza small + veg burger + steam veg momos" into cart items
-// Returns { resolved: [{item, portion}], unresolved: [string] }
+// Parses "Cheese Pizza Small + Veg Burger + Steam Veg Momos" into cart items
+// Case-insensitive, handles extra spaces, partial matches
+
+function normalize(str) {
+    return str.toLowerCase().replace(/\s+/g, ' ').trim();
+}
 
 function parseOrder(input, menu) {
     // Split on + or "and"
@@ -62,28 +66,32 @@ function parseOrder(input, menu) {
     const unresolved = [];
 
     const sizeAliases = {
-        small: ['small','s','sm'], medium: ['medium','m','med'], large: ['large','l','lg']
+        small:  ['small', 's', 'sm', 'sml'],
+        medium: ['medium', 'm', 'med', 'mdm'],
+        large:  ['large', 'l', 'lg', 'lrg']
     };
 
+    // Pre-normalize all dish names for matching
+    const sortedMenu = [...menu].sort((a, b) => b.name.length - a.name.length);
+
     for (const part of parts) {
-        const q = part.toLowerCase();
-        // Sort dishes by name length desc so longer names match first
-        const sorted = [...menu].sort((a, b) => b.name.length - a.name.length);
+        const q = normalize(part);
         let matched = false;
 
-        for (const item of sorted) {
-            if (!q.includes(item.name.toLowerCase())) continue;
+        for (const item of sortedMenu) {
+            const itemName = normalize(item.name);
+            if (!q.includes(itemName)) continue;
 
             if (item.portions && item.portions.length) {
                 let foundPortion = null;
+
                 for (const p of item.portions) {
-                    const pName = p.name.toLowerCase();
-                    const aliases = sizeAliases[pName] || [pName];
-                    if (aliases.some(a => {
-                        // match as whole word
-                        const re = new RegExp('\\b' + a + '\\b');
-                        return re.test(q);
-                    })) {
+                    const pName = normalize(p.name);
+                    // Build alias list from both hardcoded map and the actual portion name
+                    const aliases = sizeAliases[pName] || [];
+                    if (!aliases.includes(pName)) aliases.push(pName);
+
+                    if (aliases.some(a => new RegExp('\\b' + a + '\\b', 'i').test(q))) {
                         foundPortion = p;
                         break;
                     }
