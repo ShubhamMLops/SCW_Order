@@ -25,10 +25,9 @@ async function getMenuImageUrl() {
     try {
         const res  = await fetch(`${FIREBASE_URL}/settings.json`);
         const data = await res.json();
-        console.log('Settings data:', JSON.stringify(data));
         const url  = data?.menuImageUrl;
         return isValidUrl(url) ? url : null;
-    } catch (e) { console.log('Settings fetch error:', e); return null; }
+    } catch { return null; }
 }
 
 function isValidUrl(url) {
@@ -141,17 +140,11 @@ async function startBot() {
         // ── MENU — always accessible ──────────────────────────────────────────
         if (text === 'menu' || text === 'show menu' || text === 'price' || text === 'list' || /\bmenu\b/.test(text)) {
             const imgUrl = await getMenuImageUrl();
-            console.log('Menu image URL:', imgUrl);
-            const note = '\n\n_*Note:* GST is applicable on all orders. The final amount along with the QR code for payment will be shared with you after placing the order._';
+            const caption = '*ScwOrder Menu*\n\nJust tell me what you want!\nExample: _cheese pizza small_ or _veg burger_\n\nType *done* to checkout. Type *cancel* to cancel.\n\n_*Note:* GST is applicable on all orders. Final amount & payment QR will be shared after ordering._';
             if (imgUrl) {
-                await sock.sendMessage(sender, {
-                    image: { url: imgUrl },
-                    caption: '*ScwOrder Menu*\n\nJust tell me what you want!\nExample: _cheese pizza small_ or _veg burger_\n\nType *done* to checkout. Type *cancel* to cancel.' + note
-                });
+                await sock.sendMessage(sender, { image: { url: imgUrl }, caption });
             } else {
-                await sock.sendMessage(sender, {
-                    text: '*ScwOrder Menu*\n\nNo menu image set yet. Ask admin to upload one.\n\nBut you can still order! Just tell me what you want.\nExample: _cheese pizza small_ or _veg burger_\n\nType *done* to checkout.' + note
-                });
+                await sock.sendMessage(sender, { text: caption });
             }
             return;
         }
