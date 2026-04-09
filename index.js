@@ -47,7 +47,7 @@ function buildMenuText(menu) {
     txt += 'Just type what you want!\n';
     txt += '_Example: cheese pizza small_\n';
     txt += '_Example: veg burger + steam veg momos_\n\n';
-    txt += '_*Note:* +5% GST applicable. Our chef will contact you for payment._';
+    txt += '_*Note:* 5% GST is applicable. Delivery charges will apply if the order value is below ₹375 or if the delivery location is beyond 3 km._';
     return txt;
 }
 
@@ -157,6 +157,26 @@ async function startBot() {
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    // Watch for orders accepted by admin — send WhatsApp confirmation
+    db.ref('orders').on('child_changed', async snap => {
+        const order = snap.val();
+        if (order.accepted === true && !order.acceptedMsgSent) {
+            const waJid = order.waNumber ? order.waNumber + '@s.whatsapp.net' : null;
+            if (waJid) {
+                try {
+                    await sock.sendMessage(waJid, {
+                        text: '✅ *Your order has been accepted!*\n\nOur chef is preparing your order. We will contact you shortly for payment details.\n\nThank you for ordering from ScwOrder! 🙏'
+                    });
+                    await fetch(`${FIREBASE_URL}/orders/${snap.key}.json`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ acceptedMsgSent: true })
+                    });
+                } catch (e) { console.log('Accept msg error:', e.message); }
+            }
+        }
+    });
 
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
