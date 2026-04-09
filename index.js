@@ -52,11 +52,56 @@ function buildMenuText(menu) {
 }
 
 // ── Order parser ──────────────────────────────────────────────────────────────
-// Parses "Cheese Pizza Small + Veg Burger + Steam Veg Momos" into cart items
-// Case-insensitive, handles extra spaces, partial matches
+// Approach: tokenize user input, score each dish by how many of its name-words
+// appear in the user's tokens. Pick highest score. Case-insensitive.
 
-function normalize(str) {
-    return str.toLowerCase().replace(/\s+/g, ' ').trim();
+const SIZE_MAP = {
+    's': 'Small', 'sm': 'Small', 'small': 'Small',
+    'm': 'Medium', 'med': 'Medium', 'medium': 'Medium',
+    'l': 'Large', 'lg': 'Large', 'large': 'Large'
+};
+
+function findBestMatch(query, menu) {
+    const tokens = query.toLowerCase().split(/\s+/);
+
+    let bestItem  = null;
+    let bestScore = 0;
+
+    for (const item of menu) {
+        const nameTokens = item.name.toLowerCase().split(/\s+/);
+        // Score = number of name words found in user tokens
+        const score = nameTokens.filter(w => tokens.includes(w)).length;
+        // Must match at least half the name words
+        if (score > bestScore && score >= Math.ceil(nameTokens.length / 2)) {
+            bestScore = score;
+            bestItem  = item;
+        }
+    }
+
+    if (!bestItem) return null;
+
+    // Find size in tokens
+    let foundPortion = null;
+    if (bestItem.portions && bestItem.portions.length) {
+        for (const t of tokens) {
+            const sizeName = SIZE_MAP[t];
+            if (sizeName) {
+                foundPortion = bestItem.portions.find(
+                    p => p.name.toLowerCase() === sizeName.toLowerCase()
+                );
+                if (foundPortion) break;
+            }
+            // Also match directly against portion names (e.g. "250ml")
+            foundPortion = bestItem.portions.find(p => p.name.toLowerCase() === t);
+            if (foundPortion) break;
+        }
+    }
+
+    return {
+        item: bestItem,
+        portion: foundPortion,
+        needsPortion: bestItem.portions && bestItem.portions.length && !foundPortion
+    };
 }
 
 function parseOrder(input, menu) {
@@ -65,45 +110,13 @@ function parseOrder(input, menu) {
     const resolved   = [];
     const unresolved = [];
 
-    const sizeAliases = {
-        small:  ['small', 's', 'sm', 'sml'],
-        medium: ['medium', 'm', 'med', 'mdm'],
-        large:  ['large', 'l', 'lg', 'lrg']
-    };
-
-    // Pre-normalize all dish names for matching
-    const sortedMenu = [...menu].sort((a, b) => b.name.length - a.name.length);
-
     for (const part of parts) {
-        const q = normalize(part);
-        let matched = false;
-
-        for (const item of sortedMenu) {
-            const itemName = normalize(item.name);
-            if (!q.includes(itemName)) continue;
-
-            if (item.portions && item.portions.length) {
-                let foundPortion = null;
-
-                for (const p of item.portions) {
-                    const pName = normalize(p.name);
-                    // Build alias list from both hardcoded map and the actual portion name
-                    const aliases = sizeAliases[pName] || [];
-                    if (!aliases.includes(pName)) aliases.push(pName);
-
-                    if (aliases.some(a => new RegExp('\\b' + a + '\\b', 'i').test(q))) {
-                        foundPortion = p;
-                        break;
-                    }
-                }
-                resolved.push({ item, portion: foundPortion, needsPortion: !foundPortion });
-            } else {
-                resolved.push({ item, portion: null, needsPortion: false });
-            }
-            matched = true;
-            break;
+        const match = findBestMatch(part, menu);
+        if (match) {
+            resolved.push(match);
+        } else {
+            unresolved.push(part);
         }
-        if (!matched) unresolved.push(part);
     }
     return { resolved, unresolved };
 }
