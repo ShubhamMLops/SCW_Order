@@ -235,6 +235,17 @@ async function startBot() {
             return;
         }
 
+        // ── EMPTY CART ────────────────────────────────────────────────────────
+        if (text === 'empty') {
+            if (session.cart && session.cart.length) {
+                delete sessions[sender];
+                await sock.sendMessage(sender, { text: '🗑️ Cart emptied. Type *menu* to start a new order.' });
+            } else {
+                await sock.sendMessage(sender, { text: 'Your cart is already empty. Type *menu* to browse.' });
+            }
+            return;
+        }
+
         // ── MENU ──────────────────────────────────────────────────────────────
         if (/\bmenu\b/.test(text) || text === 'price' || text === 'list') {
             const menu = await getMenu();
@@ -310,15 +321,14 @@ async function startBot() {
             const phoneMatch = rawText.match(/(\+?91[\s-]?)?[6-9]\d{9}/);
             let phone = phoneMatch ? phoneMatch[0].replace(/\s|-/g, '') : null;
 
-            // Strip country code to get bare 10-digit number
             const bare = phone ? phone.replace(/^\+?91/, '') : '';
-            if (!phone || bare.length !== 10) {
+            if (!phone || bare.length !== 10 || !/^[6-9]\d{9}$/.test(bare)) {
                 await sock.sendMessage(sender, {
-                    text: '⚠️ Please include a valid *10-digit phone number* in your reply.\n\nExample:\n_Ravi, 9876543210, 12 MG Road, Bangalore_'
+                    text: '⚠️ Please include a valid *10-digit Indian mobile number* (starting with 6–9).\n\nExample:\n_Ravi, 9876543210, 12 MG Road, Bangalore_'
                 });
-                return; // stay in AWAITING_DETAILS step
+                return;
             }
-            phone = bare; // store clean 10-digit number
+            phone = bare;
 
             const order = {
                 userId:    'whatsapp_' + waNumber,
@@ -358,6 +368,13 @@ async function startBot() {
         }
 
         // ── FREE-TEXT ORDER MATCHING ──────────────────────────────────────────
+        // If user is in AWAITING_DETAILS and types ADD, let them add more items
+        if (text === 'add' && session.step === 'AWAITING_DETAILS') {
+            sessions[sender] = { step: null, cart: session.cart };
+            await sock.sendMessage(sender, { text: '➕ Sure! What else would you like to add?\n_Type your item or type *empty* to clear cart._' });
+            return;
+        }
+
         const menu  = await getMenu();
         const { resolved, unresolved } = parseOrder(text, menu);
 
@@ -389,7 +406,7 @@ async function startBot() {
             });
         } else {
             // All items ready — show cart and ask for details
-            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+            sessions[sender] = { step: 'AWAITING_DETAILS', cart: [...(session.step === 'AWAITING_DETAILS' ? session.cart : []), ...cart.filter(i => !(session.step === 'AWAITING_DETAILS' && session.cart.includes(i)))] };
             const { subtotal, gst, total } = calcBill(cart);
             await sock.sendMessage(sender, {
                 text: `🛒 *Order Summary:*\n${cartLines(cart)}\n\n` +
