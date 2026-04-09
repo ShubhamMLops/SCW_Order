@@ -250,7 +250,7 @@ async function startBot() {
                 await sock.sendMessage(sender, {
                     text: `✅ *${portion.name} ${pendingItem.name}* added!\n\n` +
                           `*Your Order:*\n${cartLines(cart)}\n\n` +
-                          `Subtotal: ₹${subtotal}\nGST (5%): ₹${gst}\nDelivery: ₹${DELIVERY_FEE}\n*Total: ₹${total}*\n\n` +
+                          `Subtotal: ₹${subtotal}\n\n` +
                           `Please reply with your:\n*Name, Phone Number & Delivery Address*`
                 });
             }
@@ -306,9 +306,9 @@ async function startBot() {
             await sock.sendMessage(sender, {
                 text: `✅ *Order Placed!*\n\n` +
                       `*Items:*\n${cartLines(cart)}\n\n` +
-                      `Subtotal: ₹${subtotal}\nGST (5%): ₹${gst}\nDelivery: ₹${DELIVERY_FEE}\n*Total: ₹${total}*\n\n` +
-                      `📍 Address: ${rawText}\n\n` +
-                      `_Our chef will contact you shortly for payment. Final amount with QR code will be shared with you._\n\n` +
+                      `Subtotal: ₹${subtotal}\n\n` +
+                       `📍 Address: ${rawText}\n\n` +
+                       `_Our chef will contact you shortly for payment. Final amount with QR code will be shared with you._\n\n` +
                       `Thank you for ordering from ScwOrder! 🙏`
             });
             return;
@@ -350,7 +350,7 @@ async function startBot() {
             const { subtotal, gst, total } = calcBill(cart);
             await sock.sendMessage(sender, {
                 text: `🛒 *Order Summary:*\n${cartLines(cart)}\n\n` +
-                      `Subtotal: ₹${subtotal}\nGST (5%): ₹${gst}\nDelivery: ₹${DELIVERY_FEE}\n*Total: ₹${total}*\n\n` +
+                      `Subtotal: ₹${subtotal}\n\n` +
                       `_+5% GST applicable. Our chef will contact you for payment._\n\n` +
                       `Please reply with your:\n*Name, Phone Number & Delivery Address*${warnMsg}`
             });
