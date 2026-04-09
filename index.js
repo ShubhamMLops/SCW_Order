@@ -212,22 +212,6 @@ async function startBot() {
                         console.log('Accepted msg sent to ' + waJid);
                     } catch (e) { console.log('Accept msg error:', e.message); }
                 }
-
-                // Rejected
-                if (order.rejected === true && !order.rejectedMsgSent && !sentMsgs.has(key + '_rej')) {
-                    sentMsgs.add(key + '_rej');
-                    try {
-                        await sock.sendMessage(waJid, {
-                            text: '❌ *Your order has been rejected.*\n\nWe are sorry, we are unable to process your order at this time. Please try again or contact us directly.\n\nThank you for your understanding. 🙏'
-                        });
-                        await fetch(`${FIREBASE_URL}/orders/${key}.json`, {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ rejectedMsgSent: true })
-                        });
-                        console.log('Rejected msg sent to ' + waJid);
-                    } catch (e) { console.log('Reject msg error:', e.message); }
-                }
             }
         } catch (e) { console.log('Poll error:', e.message); }
     }, 5000);
