@@ -179,17 +179,25 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Poll every 5s for orders accepted by admin — send WhatsApp confirmation
-    const sentAcceptMsg = new Set();
+    // Poll every 5s for orders accepted/rejected by admin — send WhatsApp confirmation
+    const sentMsgs = new Set();
     setInterval(async () => {
         try {
             const res    = await fetch(`${FIREBASE_URL}/orders.json`);
             const orders = await res.json();
             if (!orders) return;
+
             for (const [key, order] of Object.entries(orders)) {
-                if (order.accepted === true && !order.acceptedMsgSent && !sentAcceptMsg.has(key)) {
-                    sentAcceptMsg.add(key);
-                    const waJid = (order.waNumber || order.phone) + '@s.whatsapp.net';
+                // Build JID — waNumber is 10-digit, needs 91 prefix for India
+                const rawNum = order.waNumber || order.phone || '';
+                const digits = rawNum.replace(/[^0-9]/g, '');
+                if (!digits || digits.length < 10) continue; // skip web orders with no valid WA number
+                const fullNum = digits.startsWith('91') ? digits : '91' + digits;
+                const waJid   = fullNum + '@s.whatsapp.net';
+
+                // Accepted
+                if (order.accepted === true && !order.acceptedMsgSent && !sentMsgs.has(key + '_acc')) {
+                    sentMsgs.add(key + '_acc');
                     try {
                         await sock.sendMessage(waJid, {
                             text: '✅ *Your order has been accepted!*\n\nOur chef is preparing your order. We will contact you shortly for payment details.\n\nThank you for ordering from ScwOrder! 🙏'
@@ -199,20 +207,23 @@ async function startBot() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ acceptedMsgSent: true })
                         });
+                        console.log('Accepted msg sent to ' + waJid);
                     } catch (e) { console.log('Accept msg error:', e.message); }
                 }
-                if (order.rejected === true && !order.rejectedMsgSent && !sentAcceptMsg.has(key + '_rej')) {
-                    sentAcceptMsg.add(key + '_rej');
-                    const waJid = (order.waNumber || order.phone) + '@s.whatsapp.net';
+
+                // Rejected
+                if (order.rejected === true && !order.rejectedMsgSent && !sentMsgs.has(key + '_rej')) {
+                    sentMsgs.add(key + '_rej');
                     try {
                         await sock.sendMessage(waJid, {
-                            text: '❌ *Your order has been rejected.*\n\nWe\'re sorry, we are unable to process your order at this time. Please try again later or contact us directly.\n\nThank you for your understanding. 🙏'
+                            text: '❌ *Your order has been rejected.*\n\nWe are sorry, we are unable to process your order at this time. Please try again or contact us directly.\n\nThank you for your understanding. 🙏'
                         });
                         await fetch(`${FIREBASE_URL}/orders/${key}.json`, {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ rejectedMsgSent: true })
                         });
+                        console.log('Rejected msg sent to ' + waJid);
                     } catch (e) { console.log('Reject msg error:', e.message); }
                 }
             }
