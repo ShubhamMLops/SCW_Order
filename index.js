@@ -9,31 +9,77 @@ const OLLAMA_MODEL  = process.env.OLLAMA_MODEL || 'tinyllama';
 const DELIVERY_FEE  = 50;
 const GST_RATE      = 0.05;
 
-// ── Ollama AI helper ──────────────────────────────────────────────────────────
-async function askAI(userMessage, menuContext) {
-    try {
-        const systemPrompt =
-            `You are a friendly food ordering assistant for ScwOrder restaurant.\n` +
-            `Answer customer questions about the menu, help them decide what to order, ` +
-            `and keep responses short (under 3 sentences).\n` +
-            `If the customer wants to order something, tell them to just type the item name.\n\n` +
-            `MENU:\n${menuContext}`;
+// ── Ollama AI — structured order brain ───────────────────────────────────────
 
+// Conversation history per sender (last 10 messages for context)
+const chatHistory = {};
+
+function getHistory(sender) {
+    if (!chatHistory[sender]) chatHistory[sender] = [];
+    return chatHistory[sender];
+}
+
+function addHistory(sender, role, content) {
+    const h = getHistory(sender);
+    h.push({ role, content });
+    if (h.length > 10) h.splice(0, h.length - 10); // keep last 10
+}
+
+function buildMenuContext(menu) {
+    return menu.map(d => {
+        if (d.portions && d.portions.length) {
+            const sizes = d.portions.map(p => `${p.name}=₹${p.price}`).join(', ');
+            return `${d.name} [${d.category}] sizes: ${sizes}`;
+        }
+        return `${d.name} [${d.category}] ₹${d.price}`;
+    }).join('\n');
+}
+
+async function askAI(sender, userMessage, menu) {
+    const menuCtx  = buildMenuContext(menu);
+    const history  = getHistory(sender);
+    const histText = history.map(h => `${h.role === 'user' ? 'Customer' : 'Bot'}: ${h.content}`).join('\n');
+
+    const systemPrompt = `You are an AI order-taking assistant for ScwOrder food restaurant.
+Your job is to help customers order food via WhatsApp.
+
+MENU (format: Name [category] price or sizes):
+${menuCtx}
+
+RULES:
+1. Always respond with valid JSON only — no extra text, no markdown.
+2. JSON format: { "intent": "ORDER"|"QUESTION"|"GREETING"|"DONE"|"CANCEL"|"UNCLEAR", "reply": "your message to customer", "items": [{"name":"exact dish name from menu","portion":"Small|Medium|Large or null","qty":1}] }
+3. "items" only present when intent is "ORDER".
+4. If customer mentions a dish but no size and it has sizes, ask for size and set intent "QUESTION".
+5. If customer provides name+phone+address after ordering, set intent "DONE" and include their details in reply.
+6. Match dish names flexibly — "cheese pizza s" = Cheese Pizza Small.
+7. Keep replies friendly, short, in the same language as the customer.
+8. If item not on menu, say so and suggest similar items.
+9. Never make up prices — use exact prices from menu.
+
+CONVERSATION SO FAR:
+${histText}`;
+
+    try {
         const res = await fetch(`${OLLAMA_URL}/api/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 model:  OLLAMA_MODEL,
-                prompt: `${systemPrompt}\n\nCustomer: ${userMessage}\nAssistant:`,
+                prompt: `${systemPrompt}\n\nCustomer: ${userMessage}\nBot (JSON only):`,
                 stream: false,
-                options: { temperature: 0.7, num_predict: 150 }
+                format: 'json',
+                options: { temperature: 0.3, num_predict: 300 }
             }),
-            signal: AbortSignal.timeout(15000) // 15s timeout
+            signal: AbortSignal.timeout(20000)
         });
         const data = await res.json();
-        return data.response?.trim() || null;
+        const raw  = data.response?.trim() || '{}';
+        // Extract JSON even if model adds extra text
+        const match = raw.match(/\{[\s\S]*\}/);
+        return match ? JSON.parse(match[0]) : null;
     } catch (e) {
-        console.log('Ollama error:', e.message);
+        console.log('AI error:', e.message);
         return null;
     }
 }
@@ -264,213 +310,196 @@ async function startBot() {
 
         console.log(`[${sender.split('@')[0]}]: ${text}`);
 
-        // ── CANCEL ────────────────────────────────────────────────────────────
+        // ── Hard commands — always handled directly ───────────────────────────
         if (text === 'cancel') {
             delete sessions[sender];
+            delete chatHistory[sender];
             await sock.sendMessage(sender, { text: '❌ Order cancelled. Type *menu* to start again.' });
             return;
         }
-
-        // ── EMPTY CART ────────────────────────────────────────────────────────
-        if (text === 'empty' || text === 'clear cart' || text === 'new order') {
+        if (text === 'empty' || text === 'clear' || text === 'new order') {
             delete sessions[sender];
-            await sock.sendMessage(sender, { text: '🗑️ Cart cleared! Type *menu* to browse or just tell me what you want.' });
+            delete chatHistory[sender];
+            await sock.sendMessage(sender, { text: '🗑️ Cart cleared! Tell me what you want to order.' });
             return;
         }
-
-        // ── ADD MORE (while in AWAITING_DETAILS) ──────────────────────────────
-        if (text === 'add' && session.step === 'AWAITING_DETAILS') {
-            sessions[sender] = { step: 'ADDING', cart: session.cart };
-            await sock.sendMessage(sender, { text: '➕ What else would you like to add?' });
-            return;
-        }
-
-        // ── MENU ──────────────────────────────────────────────────────────────
         if (/\bmenu\b/.test(text) || text === 'price' || text === 'list') {
             const menu = await getMenu();
-            if (!menu.length) {
-                await sock.sendMessage(sender, { text: 'Menu is currently empty. Please check back soon!' });
-                return;
-            }
             await sock.sendMessage(sender, { text: buildMenuText(menu) });
+            addHistory(sender, 'user', rawText);
+            addHistory(sender, 'assistant', '[menu sent]');
             return;
         }
 
-        // ── GREETINGS ─────────────────────────────────────────────────────────
-        if (/^(hi|hello|hey|hii|helo|namaste)$/i.test(text)) {
-            await sock.sendMessage(sender, {
-                text: '👋 *Welcome to ScwOrder!*\n\nType *menu* to see our full menu.\n\nThen just tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + steam veg momos_'
-            });
-            return;
-        }
-
-        // ── WAITING FOR PORTION on a specific pending item ────────────────────
-        if (session.step === 'AWAITING_PORTION') {
-            const { pendingItem, cart } = session;
-            const choice = parseInt(text);
-            const portions = pendingItem.portions;
-
-            if (isNaN(choice) || choice < 1 || choice > portions.length) {
-                const opts = portions.map((p, i) => `  ${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-                await sock.sendMessage(sender, { text: `Please reply with a number 1–${portions.length}:\n\n${opts}` });
+        // ── AWAITING_DETAILS — collect name/phone/address ─────────────────────
+        if (session.step === 'AWAITING_DETAILS') {
+            const phoneMatch = rawText.match(/[6-9]\d{9}/);
+            if (!phoneMatch) {
+                await sock.sendMessage(sender, {
+                    text: '⚠️ Please include your *10-digit phone number*.\n\nExample: _Ravi, 9876543210, 12 MG Road, Delhi_'
+                });
                 return;
             }
-
-            const portion = portions[choice - 1];
-            cart.push({ item: pendingItem, portion });
-
-            // Check if there are more items needing portions
-            const nextPending = session.pendingItems?.shift();
-            if (nextPending) {
-                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: nextPending, pendingItems: session.pendingItems, cart };
-                const opts = nextPending.portions.map((p, i) => `  ${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-                await sock.sendMessage(sender, { text: `✅ Added!\n\nNow, which size for *${nextPending.name}*?\n\n${opts}` });
-            } else {
-                // All portions resolved — ask for details
-                sessions[sender] = { step: 'AWAITING_DETAILS', cart };
-                const { subtotal, gst, total } = calcBill(cart);
-                await sock.sendMessage(sender, {
-                    text: `✅ *${portion.name} ${pendingItem.name}* added!\n\n` +
-                          `*Your Order:*\n${cartLines(cart)}\n\n` +
-                          `Subtotal: ₹${subtotal}\n\n` +
-                          `Please reply with your:\n*Name, Phone Number & Delivery Address*`
-                });
-            }
-            return;
-        }
-
-        // ── WAITING FOR CUSTOMER DETAILS ──────────────────────────────────────
-        if (session.step === 'AWAITING_DETAILS') {
             const { cart } = session;
             const waNumber = sender.split('@')[0];
             const { subtotal, gst, total } = calcBill(cart);
-
             const orderItems = cart.map(e => ({
-                id:       e.item.id,
-                name:     e.portion ? `${e.item.name} (${e.portion.name})` : e.item.name,
-                price:    e.portion ? parseFloat(e.portion.price) : parseFloat(e.item.price || 0),
-                img:      (e.item.imageUrl && e.item.imageUrl.startsWith('http')) ? e.item.imageUrl : '',
+                id: e.item.id,
+                name: e.portion ? `${e.item.name} (${e.portion.name})` : e.item.name,
+                price: e.portion ? parseFloat(e.portion.price) : parseFloat(e.item.price || 0),
+                img: (e.item.imageUrl && e.item.imageUrl.startsWith('http')) ? e.item.imageUrl : '',
                 quantity: 1,
-                portion:  e.portion ? e.portion.name : null
+                portion: e.portion ? e.portion.name : null
             }));
-
-            // Parse name, phone, address from the reply
-            // Accept any free text — store as address, extract phone if present
-            // AFTER
-            const phoneMatch = rawText.match(/(\+?91[\s-]?)?[6-9]\d{9}/);
-            let phone = phoneMatch ? phoneMatch[0].replace(/\s|-/g, '') : null;
-
-            const bare = phone ? phone.replace(/^\+?91/, '') : '';
-            if (!phone || bare.length !== 10 || !/^[6-9]\d{9}$/.test(bare)) {
-                await sock.sendMessage(sender, {
-                    text: '⚠️ Please include a valid *10-digit Indian mobile number* (starting with 6–9).\n\nExample:\n_Ravi, 9876543210, 12 MG Road, Bangalore_'
-                });
-                return;
-            }
-            phone = bare;
-
             const order = {
-                userId:    'whatsapp_' + waNumber,
-                userEmail: 'whatsapp@ScwOrder.com',
-                phone,
-                waNumber,
-                address:   rawText,
-                location:  { lat: 0, lng: 0 },
-                items:     orderItems,
-                subtotal:  subtotal.toFixed(2),
-                gst:       gst.toFixed(2),
-                deliveryFee: DELIVERY_FEE,
-                total:     total.toFixed(2),
-                status:    'Placed',
-                method:    'WhatsApp Order',
+                userId: 'whatsapp_' + waNumber, userEmail: 'whatsapp@ScwOrder.com',
+                phone: phoneMatch[0], waNumber, address: rawText,
+                location: { lat: 0, lng: 0 }, items: orderItems,
+                subtotal: subtotal.toFixed(2), gst: gst.toFixed(2),
+                deliveryFee: DELIVERY_FEE, total: total.toFixed(2),
+                status: 'Placed', method: 'WhatsApp Order',
                 timestamp: new Date().toISOString()
             };
-
             try {
                 await fetch(`${FIREBASE_URL}/orders.json`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(order)
                 });
             } catch (e) { console.log('Firebase Error:', e); }
 
             delete sessions[sender];
+            delete chatHistory[sender];
             await sock.sendMessage(sender, {
-                text: `✅ *Order Placed!*\n\n` +
-                      `*Items:*\n${cartLines(cart)}\n\n` +
-                      `Subtotal: ₹${subtotal}\n\n` +
-                       `📍 Address: ${rawText}\n\n` +
-                       `_Our chef will contact you shortly for payment. Final amount with QR code will be shared with you._\n\n` +
-                      `Thank you for ordering from ScwOrder! 🙏`
+                text: `✅ *Order Placed!*\n\n*Items:*\n${cartLines(cart)}\n\nSubtotal: ₹${subtotal}\n\n` +
+                      `📍 ${rawText}\n\n_Our chef will contact you shortly for payment. Final amount with QR code will be shared._\n\nThank you! 🙏`
             });
             return;
         }
 
-        // ── FREE-TEXT ORDER MATCHING ──────────────────────────────────────────
-        const menu  = await getMenu();
-        const { resolved, unresolved } = parseOrder(text, menu);
-
-        if (!resolved.length) {
-            // If stuck in AWAITING_DETAILS, remind user of options
-            if (session.step === 'AWAITING_DETAILS') {
+        // ── AWAITING_PORTION — numbered size selection ────────────────────────
+        if (session.step === 'AWAITING_PORTION') {
+            const { pendingItem, cart } = session;
+            const choice = parseInt(text);
+            const portions = pendingItem.portions;
+            if (isNaN(choice) || choice < 1 || choice > portions.length) {
+                const opts = portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                await sock.sendMessage(sender, { text: `Please reply with a number 1–${portions.length}:\n\n${opts}` });
+                return;
+            }
+            const portion = portions[choice - 1];
+            cart.push({ item: pendingItem, portion });
+            const next = session.pendingItems?.shift();
+            if (next) {
+                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: next, pendingItems: session.pendingItems, cart };
+                const opts = next.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                await sock.sendMessage(sender, { text: `✅ Added! Which size for *${next.name}*?\n\n${opts}` });
+            } else {
+                sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+                const { subtotal } = calcBill(cart);
                 await sock.sendMessage(sender, {
-                    text: `Please reply with your *Name, Phone Number & Delivery Address* to place the order.\n\nOr type *add* to add more items, *empty* to clear cart, *cancel* to cancel.`
+                    text: `✅ Added!\n\n*Your Order:*\n${cartLines(cart)}\n\nSubtotal: ₹${subtotal}\n\n` +
+                          `Please reply with your *Name, Phone Number & Address*.\n_Type *add* to add more | *cancel* to cancel_`
+                });
+            }
+            return;
+        }
+
+        // ── AI-FIRST: let the model understand intent ─────────────────────────
+        addHistory(sender, 'user', rawText);
+
+        const menu = await getMenu();
+        let handled = false;
+
+        if (OLLAMA_URL && OLLAMA_MODEL) {
+            const ai = await askAI(sender, rawText, menu);
+            console.log('AI response:', JSON.stringify(ai));
+
+            if (ai) {
+                addHistory(sender, 'assistant', ai.reply || '');
+
+                if (ai.intent === 'ORDER' && ai.items && ai.items.length) {
+                    // Map AI items to actual menu items
+                    const existingCart = session.cart || [];
+                    const readyItems   = [];
+                    const needsPortion = [];
+
+                    for (const aiItem of ai.items) {
+                        const match = findBestMatch(aiItem.name, menu);
+                        if (!match) continue;
+                        if (aiItem.portion) {
+                            const p = match.item.portions?.find(p =>
+                                p.name.toLowerCase().includes(aiItem.portion.toLowerCase()) ||
+                                aiItem.portion.toLowerCase().includes(p.name.toLowerCase())
+                            );
+                            if (p) { readyItems.push({ item: match.item, portion: p }); continue; }
+                        }
+                        if (match.item.portions && match.item.portions.length && !aiItem.portion) {
+                            needsPortion.push(match);
+                        } else {
+                            readyItems.push({ item: match.item, portion: match.portion });
+                        }
+                    }
+
+                    const cart = [...existingCart, ...readyItems];
+
+                    if (needsPortion.length) {
+                        const first = needsPortion.shift();
+                        sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
+                        const opts = first.item.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                        await sock.sendMessage(sender, { text: (ai.reply || '') + `\n\nWhich size for *${first.item.name}*?\n\n${opts}` });
+                    } else if (cart.length) {
+                        sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+                        const { subtotal } = calcBill(cart);
+                        await sock.sendMessage(sender, {
+                            text: (ai.reply || `Got it!`) + `\n\n*Your Order:*\n${cartLines(cart)}\n\nSubtotal: ₹${subtotal}\n\n` +
+                                  `Please reply with your *Name, Phone Number & Address*.\n_Type *add* to add more | *cancel* to cancel_`
+                        });
+                    } else {
+                        await sock.sendMessage(sender, { text: ai.reply || "Sorry, I couldn't find that item. Type *menu* to see what's available." });
+                    }
+                    handled = true;
+
+                } else if (ai.intent === 'CANCEL') {
+                    delete sessions[sender]; delete chatHistory[sender];
+                    await sock.sendMessage(sender, { text: ai.reply || '❌ Order cancelled.' });
+                    handled = true;
+
+                } else if (ai.reply) {
+                    await sock.sendMessage(sender, { text: ai.reply });
+                    handled = true;
+                }
+            }
+        }
+
+        // ── Fallback: rule-based matching if AI unavailable ───────────────────
+        if (!handled) {
+            const { resolved, unresolved } = parseOrder(text, menu);
+            if (!resolved.length) {
+                await sock.sendMessage(sender, {
+                    text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_`
                 });
                 return;
             }
+            const existingCart = session.cart || [];
+            const needsPortion = resolved.filter(e => e.needsPortion);
+            const readyItems   = resolved.filter(e => !e.needsPortion);
+            const cart         = [...existingCart, ...readyItems];
+            let warnMsg = unresolved.length ? `\n\n⚠️ Could not find: _${unresolved.join(', ')}_` : '';
 
-            // Try Ollama AI for general questions
-            if (OLLAMA_URL) {
-                const menu    = await getMenu();
-                const menuCtx = menu.map(d => {
-                    if (d.portions && d.portions.length) {
-                        return `${d.name}: ${d.portions.map(p => `${p.name} ₹${p.price}`).join(', ')}`;
-                    }
-                    return `${d.name}: ₹${d.price}`;
-                }).join('\n');
-
-                const aiReply = await askAI(rawText, menuCtx);
-                if (aiReply) {
-                    await sock.sendMessage(sender, { text: aiReply });
-                    return;
-                }
+            if (needsPortion.length) {
+                const first = needsPortion.shift();
+                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
+                const opts = first.item.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                await sock.sendMessage(sender, { text: `Which size for *${first.item.name}*?\n\n${opts}${warnMsg}` });
+            } else {
+                sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+                const { subtotal } = calcBill(cart);
+                await sock.sendMessage(sender, {
+                    text: `🛒 *Order Summary:*\n${cartLines(cart)}\n\nSubtotal: ₹${subtotal}\n\n` +
+                          `_+5% GST applicable._\n\nPlease reply with your *Name, Phone Number & Address*\n` +
+                          `_Type *add* to add more | *empty* to clear | *cancel* to cancel_${warnMsg}`
+                });
             }
-
-            await sock.sendMessage(sender, {
-                text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + momos_`
-            });
-            return;
-        }
-
-        // Warn about unrecognised items
-        let warnMsg = '';
-        if (unresolved.length) {
-            warnMsg = `\n\n⚠️ Could not find: _${unresolved.join(', ')}_`;
-        }
-
-        // Merge with existing cart (works whether session exists or not)
-        const existingCart = session.cart || [];
-        const needsPortion = resolved.filter(e => e.needsPortion);
-        const readyItems   = resolved.filter(e => !e.needsPortion);
-        const cart         = [...existingCart, ...readyItems];
-
-        if (needsPortion.length) {
-            const first = needsPortion.shift();
-            sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
-            const opts = first.item.portions.map((p, i) => `  ${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-            await sock.sendMessage(sender, {
-                text: `Which size for *${first.item.name}*?\n\n${opts}${warnMsg}`
-            });
-        } else {
-            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
-            const { subtotal } = calcBill(cart);
-            await sock.sendMessage(sender, {
-                text: `🛒 *Order Summary:*\n${cartLines(cart)}\n\n` +
-                      `Subtotal: ₹${subtotal}\n\n` +
-                      `_+5% GST applicable. Our chef will contact you for payment._\n\n` +
-                      `Please reply with your:\n*Name, Phone Number & Delivery Address*\n\n` +
-                      `_Type *add* to add more items | *empty* to clear cart | *cancel* to cancel_${warnMsg}`
-            });
         }
     });
 }
