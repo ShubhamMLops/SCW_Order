@@ -320,22 +320,31 @@ async function startBot() {
             await saveSessionToFirebase();
         }
         if (connection === 'close') {
-            const code = lastDisconnect?.error?.output?.statusCode;
-            if (code === DisconnectReason.loggedOut) {
-                console.log('[Session] Logged out — clearing session, generating new QR...');
-                try {
-                    await fetch(`${FIREBASE_URL}/wa_session.json`, { method: 'DELETE' });
-                } catch(e) {}
+            const code    = lastDisconnect?.error?.output?.statusCode;
+            const errMsg  = lastDisconnect?.error?.message || '';
+            const isBadSession = code === DisconnectReason.loggedOut ||
+                                 errMsg.includes('Bad MAC') ||
+                                 errMsg.includes('Bad mac') ||
+                                 code === 401 || code === 403 || code === 440;
+
+            if (isBadSession) {
+                console.log('[Session] Bad/expired session — clearing and regenerating QR...');
+                try { await fetch(`${FIREBASE_URL}/wa_session.json`, { method: 'DELETE' }); } catch(e) {}
                 try {
                     if (fs.existsSync(SESSION_DIR)) fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                 } catch(e) {}
             }
-            // Always restart — will show QR if no session, or reconnect if session exists
-            setTimeout(startBot, 2000);
+            setTimeout(startBot, 3000);
         }
     });
 
-    sock.ev.on('creds.update', async () => { saveCreds(); await saveSessionToFirebase(); });
+    let saveDebounce = null;
+    sock.ev.on('creds.update', async () => {
+        saveCreds();
+        // Debounce Firebase save — avoid rapid writes causing session corruption
+        clearTimeout(saveDebounce);
+        saveDebounce = setTimeout(saveSessionToFirebase, 3000);
+    });
 
     // ── Order status poller ───────────────────────────────────────────────────
     const sentMsgs = new Set();
@@ -701,8 +710,8 @@ async function startBot() {
                 `🍕 Pizzas | 🍔 Burgers | 🥟 Momos | ☕ Beverages & more!\n\n` +
                 `Type *menu* to see everything.\n` +
                 `Or just tell me what you want:\n\n` +
-                `Single item: _cheese pizza small_\n` +
-                `Multiple items: _veg burger + momos_\n`
+                `Single item: _111_\n` +
+                `Multiple items: _111 + 121_\n`
             );
         // ── Common queries ────────────────────────────────────────────────────
         if (/\b(thanks|thank you|ty|shukriya|dhanyawad|thx)\b/i.test(text))
