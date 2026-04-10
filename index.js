@@ -356,28 +356,19 @@ async function startBot() {
         if (connection === 'open') {
             console.log('✅ ScwOrder Bot ONLINE');
             connectedAt = Date.now();
-            // Delay save to ensure all session files are fully written
-            setTimeout(saveSessionToFirebase, 5000);
         }
         if (connection === 'close') {
             const code = lastDisconnect?.error?.output?.statusCode;
-
             if (code === DisconnectReason.loggedOut || code === 401 || code === 403) {
                 console.log('[Session] Auth failure — clearing session for fresh QR...');
                 try { await fetch(`${FIREBASE_URL}/wa_session.json`, { method: 'DELETE' }); } catch(e) {}
                 try {
                     if (fs.existsSync(SESSION_DIR)) fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                 } catch(e) {}
-                setTimeout(startBot, 3000);
-            } else if (code === 440) {
-                // Connection replaced — another instance is running
-                // Wait longer before reconnecting so the other instance can stabilize
-                console.log('[Connection] Replaced by another instance — waiting 30s before reconnect...');
-                setTimeout(startBot, 30000);
             } else {
                 console.log(`[Connection] Closed (code ${code}) — reconnecting in 5s...`);
-                setTimeout(startBot, 5000);
             }
+            setTimeout(startBot, 5000);
         }
     });
 
