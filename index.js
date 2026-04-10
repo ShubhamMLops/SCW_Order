@@ -15,6 +15,40 @@ const SESSION_DIR   = 'session_data';
 
 const sessions = {};
 
+// ── Session persistence (cart survives bot restarts) ──────────────────────────
+async function saveSessions() {
+    if (!FIREBASE_URL) return;
+    try {
+        // Only save sessions that have a cart with items
+        const toSave = {};
+        for (const [k, v] of Object.entries(sessions)) {
+            if (v.cart?.length) toSave[k.replace(/[.#$[\]]/g, '_')] = JSON.stringify(v);
+        }
+        await fetch(`${FIREBASE_URL}/wa_sessions.json`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(toSave)
+        });
+    } catch(e) {}
+}
+
+async function loadSessions() {
+    if (!FIREBASE_URL) return;
+    try {
+        const res  = await fetch(`${FIREBASE_URL}/wa_sessions.json`);
+        const data = await res.json();
+        if (!data || typeof data !== 'object') return;
+        for (const [k, v] of Object.entries(data)) {
+            try {
+                const key = k.replace(/_/g, '.');  // rough reverse — good enough
+                sessions[key] = JSON.parse(v);
+            } catch(e) {}
+        }
+        const count = Object.keys(sessions).length;
+        if (count) console.log(`[Sessions] Restored ${count} active cart(s)`);
+    } catch(e) {}
+}
+
 // ── Firebase session persistence ──────────────────────────────────────────────
 
 async function saveSessionToFirebase() {
@@ -290,6 +324,7 @@ async function startBot() {
     if (!FIREBASE_URL) { console.error('ERROR: FIREBASE_URL missing!'); process.exit(1); }
 
     await restoreSessionFromFirebase();
+    await loadSessions();
 
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
     const { version }          = await fetchLatestBaileysVersion();
@@ -383,6 +418,12 @@ async function startBot() {
     }, 5000);
 
     // ── Message handler ───────────────────────────────────────────────────────
+    let sessionSaveTimer = null;
+    function debounceSaveSessions() {
+        clearTimeout(sessionSaveTimer);
+        sessionSaveTimer = setTimeout(saveSessions, 2000);
+    }
+
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg.message || msg.key.remoteJid === 'status@broadcast' || msg.key.fromMe) return;
@@ -393,7 +434,10 @@ async function startBot() {
 
         const text    = rawText.toLowerCase().trim();
         const session = sessions[sender] || {};
-        const send    = t => sock.sendMessage(sender, { text: t });
+        const send    = t => {
+            debounceSaveSessions(); // save cart state after every response
+            return sock.sendMessage(sender, { text: t });
+        };
 
         console.log(`[${sender.split('@')[0]}] ${rawText}`);
 
