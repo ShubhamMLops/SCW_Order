@@ -272,8 +272,17 @@ async function startBot() {
         }
         if (connection === 'close') {
             const code = lastDisconnect?.error?.output?.statusCode;
-            if (code !== DisconnectReason.loggedOut) startBot();
-            else console.log('[Connection] Logged out. Re-scan QR.');
+            if (code === DisconnectReason.loggedOut) {
+                console.log('[Session] Logged out — clearing session, generating new QR...');
+                try {
+                    await fetch(`${FIREBASE_URL}/wa_session.json`, { method: 'DELETE' });
+                } catch(e) {}
+                try {
+                    if (fs.existsSync(SESSION_DIR)) fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+                } catch(e) {}
+            }
+            // Always restart — will show QR if no session, or reconnect if session exists
+            setTimeout(startBot, 2000);
         }
     });
 
