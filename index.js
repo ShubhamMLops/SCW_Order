@@ -145,52 +145,44 @@ const SIZE_MAP = {
 
 const SIZE_WORDS = new Set(Object.keys(SIZE_MAP));
 
-// Returns { item, portion, needsPortion } for best match, or null
-// Returns { ambiguous: true, candidates: [] } if multiple items score similarly
+// Common words that alone shouldn't trigger a match
+const STOP_WORDS = new Set(['veg', 'non', 'special', 'double', 'steam', 'fried', 'crispy', 'spicy', 'hot', 'cold', 'fresh', 'plain']);
+
 function findBestMatch(query, menu) {
-    // Normalize: lowercase, remove punctuation
-    const allTokens  = query.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-    // Separate size tokens from food tokens
-    const sizeTokens = allTokens.filter(t => SIZE_WORDS.has(t));
-    const foodTokens = allTokens.filter(t => !SIZE_WORDS.has(t));
+    const allTokens    = query.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+    const sizeTokens   = allTokens.filter(t => SIZE_WORDS.has(t));
+    const foodTokens   = allTokens.filter(t => !SIZE_WORDS.has(t));
+    const searchTokens = foodTokens.length ? foodTokens : allTokens;
 
-    const THRESHOLD = 0.60; // 60% match required
+    const scored = menu.map(item => {
+        const nameTokens = item.name.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+        const rawScore   = matchScore(searchTokens, nameTokens);
 
-    const scored = menu
-        .map(item => {
-            const nameTokens = item.name.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-            const score = matchScore(foodTokens.length ? foodTokens : allTokens, nameTokens);
-            return { item, score };
-        })
-        .filter(x => x.score >= THRESHOLD)
-        .sort((a, b) => b.score - a.score);
+        // Keyword boost: if any query token (4+ chars, not a stop word) exactly matches
+        // a name token, guarantee at least 0.5 score so "momos" finds "Steam Veg Momos"
+        const hasKeyword = searchTokens.some(qt =>
+            qt.length >= 4 && !STOP_WORDS.has(qt) && nameTokens.includes(qt)
+        );
+
+        return { item, score: hasKeyword ? Math.max(rawScore, 0.5) : rawScore };
+    })
+    .filter(x => x.score >= 0.35)
+    .sort((a, b) => b.score - a.score);
 
     if (!scored.length) return null;
 
-    // Check for ambiguity: if multiple items score well, show a list
+    // Show numbered list if multiple items match similarly
     if (scored.length >= 2) {
         const name0 = scored[0].item.name.toLowerCase();
         const name1 = scored[1].item.name.toLowerCase();
-        // Flag as ambiguous if scores are close OR if 3+ items match well
         const scoresClose = (scored[0].score - scored[1].score) < 0.15;
-        const manyMatches = scored.length >= 3 && scored[2].score >= THRESHOLD;
-        if (scoresClose && !name0.includes(name1) && !name1.includes(name0)) {
-            return {
-                ambiguous: true,
-                candidates: scored.slice(0, Math.min(5, scored.length)).map(x => x.item)
-            };
-        }
-        if (manyMatches) {
-            return {
-                ambiguous: true,
-                candidates: scored.slice(0, Math.min(5, scored.length)).map(x => x.item)
-            };
+        const manyMatches = scored.length >= 3 && scored[2].score >= 0.35;
+        if ((scoresClose || manyMatches) && !name0.includes(name1) && !name1.includes(name0)) {
+            return { ambiguous: true, candidates: scored.slice(0, Math.min(5, scored.length)).map(x => x.item) };
         }
     }
 
     const bestItem = scored[0].item;
-
-    // Find portion from size tokens
     let foundPortion = null;
     if (bestItem.portions?.length) {
         for (const t of sizeTokens) {
@@ -200,7 +192,6 @@ function findBestMatch(query, menu) {
                 if (foundPortion) break;
             }
         }
-        // Also try matching portion names directly from all tokens
         if (!foundPortion) {
             for (const t of allTokens) {
                 foundPortion = bestItem.portions.find(p => p.name.toLowerCase() === t);
@@ -209,11 +200,7 @@ function findBestMatch(query, menu) {
         }
     }
 
-    return {
-        item: bestItem,
-        portion: foundPortion,
-        needsPortion: !!(bestItem.portions?.length && !foundPortion)
-    };
+    return { item: bestItem, portion: foundPortion, needsPortion: !!(bestItem.portions?.length && !foundPortion) };
 }
 
 // ── Quantity parser ("2 burgers", "double momos", "3x pizza") ─────────────────
