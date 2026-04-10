@@ -2,9 +2,41 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 const QRCode = require('qrcode');
 const pino   = require('pino');
 
-const FIREBASE_URL = process.env.FIREBASE_URL;
-const DELIVERY_FEE = 50;
-const GST_RATE     = 0.05;
+const FIREBASE_URL  = process.env.FIREBASE_URL;
+const GEMINI_KEY    = process.env.GEMINI_KEY;
+const OLLAMA_URL    = process.env.OLLAMA_URL || 'http://localhost:11434';
+const OLLAMA_MODEL  = process.env.OLLAMA_MODEL || 'tinyllama';
+const DELIVERY_FEE  = 50;
+const GST_RATE      = 0.05;
+
+// ── Ollama AI helper ──────────────────────────────────────────────────────────
+async function askAI(userMessage, menuContext) {
+    try {
+        const systemPrompt =
+            `You are a friendly food ordering assistant for ScwOrder restaurant.\n` +
+            `Answer customer questions about the menu, help them decide what to order, ` +
+            `and keep responses short (under 3 sentences).\n` +
+            `If the customer wants to order something, tell them to just type the item name.\n\n` +
+            `MENU:\n${menuContext}`;
+
+        const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model:  OLLAMA_MODEL,
+                prompt: `${systemPrompt}\n\nCustomer: ${userMessage}\nAssistant:`,
+                stream: false,
+                options: { temperature: 0.7, num_predict: 150 }
+            }),
+            signal: AbortSignal.timeout(15000) // 15s timeout
+        });
+        const data = await res.json();
+        return data.response?.trim() || null;
+    } catch (e) {
+        console.log('Ollama error:', e.message);
+        return null;
+    }
+}
 
 // per-sender session
 const sessions = {};
@@ -384,11 +416,29 @@ async function startBot() {
                 await sock.sendMessage(sender, {
                     text: `Please reply with your *Name, Phone Number & Delivery Address* to place the order.\n\nOr type *add* to add more items, *empty* to clear cart, *cancel* to cancel.`
                 });
-            } else {
-                await sock.sendMessage(sender, {
-                    text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + momos_`
-                });
+                return;
             }
+
+            // Try Ollama AI for general questions
+            if (OLLAMA_URL) {
+                const menu    = await getMenu();
+                const menuCtx = menu.map(d => {
+                    if (d.portions && d.portions.length) {
+                        return `${d.name}: ${d.portions.map(p => `${p.name} ₹${p.price}`).join(', ')}`;
+                    }
+                    return `${d.name}: ₹${d.price}`;
+                }).join('\n');
+
+                const aiReply = await askAI(rawText, menuCtx);
+                if (aiReply) {
+                    await sock.sendMessage(sender, { text: aiReply });
+                    return;
+                }
+            }
+
+            await sock.sendMessage(sender, {
+                text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + momos_`
+            });
             return;
         }
 
