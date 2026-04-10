@@ -88,18 +88,21 @@ function buildMenuText(menu) {
     txt += '─'.repeat(28) + '\n';
     txt += '📝 *How to order:*\n';
     txt += 'Just type what you want!\n';
-    txt += '_cheese pizza small_\n';
-    txt += '_veg burger + momos_\n';
-    txt += '_2 veg burger + cold coffee_\n\n';
+    txt += 'Single item: _cheese pizza small_\n';
+    txt += 'Multiple items: _veg burger + momos_\n';
+    txt += '_2 veg burgers + cold coffee_\n\n';
+
     txt += '📌 *Commands:*\n';
     txt += '*cart* — view your cart\n';
     txt += '*add* — add more items\n';
     txt += '*empty* — clear cart\n';
     txt += '*cancel* — cancel order\n\n';
-    txt += '_Free delivery on orders above ₹375. 5% GST applicable._';
-    return txt;
-}
 
+    txt += '📢 *Note:*\n';
+    txt += '5% GST is applicable. Delivery charges will apply if the order value is below ₹375 or if the delivery location is beyond 3 km.\n';
+
+    return txt;
+    }
 // ── Fuzzy matcher ─────────────────────────────────────────────────────────────
 
 function levenshtein(a, b) {
