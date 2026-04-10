@@ -339,69 +339,113 @@ async function startBot() {
 
         console.log(`[${sender.split('@')[0]}] ${rawText}`);
 
-        // ── Global commands ───────────────────────────────────────────────────
+        // ── Global commands (always work regardless of state) ─────────────────
         if (text === 'cancel') {
             delete sessions[sender];
-            return send('❌ Order cancelled. Type *menu* to start fresh.');
+            return send('❌ Order cancelled.\n\nType *menu* to start fresh or just tell me what you want!');
         }
         if (text === 'empty' || text === 'clear') {
             delete sessions[sender];
-            return send('🗑️ Cart cleared! What would you like to order?');
+            return send('🗑️ Cart cleared!\n\nWhat would you like to order? Type *menu* to browse.');
         }
         if (/^(menu|price|prices|list|items)$/.test(text)) {
             const menu = await getMenu();
             return send(buildMenuText(menu));
         }
-        if (/^(cart|my cart|bag|order)$/.test(text)) {
+        if (/^(cart|my cart|bag|view cart|show cart|mycart)$/.test(text)) {
             if (!session.cart?.length)
                 return send('🛒 Your cart is empty.\n\nType *menu* or just tell me what you want!');
-            return send(`🛒 *Your Cart:*\n${cartLines(session.cart)}${billBlock(session.cart)}\n\n_Type *add* to add more | *empty* to clear | *cancel* to cancel_`);
-        }
-        if ((text === 'add' || text === 'add more') && session.cart?.length) {
-            sessions[sender] = { ...session, step: null };
-            return send('➕ What else would you like to add?');
-        }
-
-        // ── AWAITING_DETAILS ──────────────────────────────────────────────────
-        if (session.step === 'AWAITING_DETAILS') {
-            const phoneMatch = rawText.match(/[6-9]\d{9}/);
-            if (!phoneMatch)
-                return send('⚠️ Please include your *10-digit mobile number*.\n\n_Example:_\nRavi, *9876543210*, 12 MG Road, Delhi');
-
-            const { cart } = session;
-            const waNumber = sender.split('@')[0];
-            const { subtotal } = calcBill(cart);
-            const orderItems = cart.map(e => ({
-                id: e.item.id,
-                name: e.portion ? `${e.item.name} (${e.portion.name})` : e.item.name,
-                price: e.portion ? parseFloat(e.portion.price) : parseFloat(e.item.price || 0),
-                img: e.item.imageUrl?.startsWith('http') ? e.item.imageUrl : '',
-                quantity: 1,
-                portion: e.portion?.name || null
-            }));
-            await fetch(`${FIREBASE_URL}/orders.json`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    userId: 'whatsapp_' + waNumber, userEmail: 'whatsapp@scworder.com',
-                    phone: phoneMatch[0], waNumber, address: rawText,
-                    location: { lat: 0, lng: 0 }, items: orderItems,
-                    subtotal: subtotal.toFixed(2),
-                    status: 'Placed', method: 'WhatsApp',
-                    timestamp: new Date().toISOString()
-                })
-            }).catch(e => console.log('[Order] Firebase error:', e.message));
-
-            delete sessions[sender];
             return send(
-                `✅ *Order Placed!*\n\n` +
-                `*Items:*\n${cartLines(cart)}` +
-                `${billBlock(cart)}\n\n` +
-                `📍 *Address:* ${rawText}\n\n` +
-                `_Our team will contact you shortly for payment. Thank you! 🙏_`
+                `🛒 *Your Cart:*\n${cartLines(session.cart)}${billBlock(session.cart)}\n\n` +
+                `*Options:*\n` +
+                `• Type *proceed* or *done* → checkout\n` +
+                `• Type *add* → add more items\n` +
+                `• Type *empty* → clear cart\n` +
+                `• Type *cancel* → cancel order`
             );
         }
+        if (/^(proceed|done|checkout|place order|confirm|order now)$/.test(text)) {
+            if (!session.cart?.length)
+                return send('🛒 Your cart is empty!\n\nTell me what you want to order or type *menu* to browse.');
+            sessions[sender] = { ...session, step: 'AWAITING_DETAILS' };
+            return send(
+                `🛒 *Order Summary:*\n${cartLines(session.cart)}${billBlock(session.cart)}\n\n` +
+                `Please share your *Name, Phone & Address* to confirm.\n` +
+                `_Example: Ravi, 9876543210, 12 MG Road, Delhi_\n\n` +
+                `_Type *add* to add more items first_`
+            );
+        }
+        if (/^(add|add more|more)$/.test(text)) {
+            if (session.cart?.length) {
+                sessions[sender] = { ...session, step: null };
+                return send(`➕ Sure! What else would you like to add?\n\n*Current cart:*\n${cartLines(session.cart)}`);
+            }
+            return send('Tell me what you want to order!\n_Example: cheese pizza small_\n\nType *menu* to browse.');
+        }
 
-        // ── AWAITING_PORTION ──────────────────────────────────────────────────
+        // ── AWAITING_DETAILS — collect name/phone/address ─────────────────────
+        if (session.step === 'AWAITING_DETAILS') {
+            // Check if user is trying to add a food item instead of giving address
+            const menuForCheck = await getMenu();
+            const { resolved: foodCheck } = parseOrder(text, menuForCheck);
+            if (foodCheck.length) {
+                // User typed food — add to cart and stay in flow
+                sessions[sender] = { ...session, step: null };
+                // Fall through to order matching below (don't return)
+            } else {
+                // Extract phone — accept +91, 91, or plain 10-digit
+                const phoneMatch = rawText.replace(/\s/g, '').match(/(?:\+?91)?([6-9]\d{9})/);
+                if (!phoneMatch) {
+                    return send(
+                        `⚠️ Please include your *10-digit mobile number*.\n\n` +
+                        `_Example: Ravi, *9876543210*, 12 MG Road, Delhi_\n\n` +
+                        `Or type *add* to add more items | *cart* to review | *cancel* to cancel`
+                    );
+                }
+
+                const { cart } = session;
+                const waNumber  = sender.split('@')[0];
+                const { subtotal } = calcBill(cart);
+                const orderItems = cart.map(e => ({
+                    id:       e.item.id,
+                    name:     e.portion ? `${e.item.name} (${e.portion.name})` : e.item.name,
+                    price:    e.portion ? parseFloat(e.portion.price) : parseFloat(e.item.price || 0),
+                    img:      e.item.imageUrl?.startsWith('http') ? e.item.imageUrl : '',
+                    quantity: 1,
+                    portion:  e.portion?.name || null
+                }));
+
+                await fetch(`${FIREBASE_URL}/orders.json`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        userId:    'whatsapp_' + waNumber,
+                        userEmail: 'whatsapp@scworder.com',
+                        phone:     phoneMatch[1],
+                        waNumber,
+                        address:   rawText,
+                        location:  { lat: 0, lng: 0 },
+                        items:     orderItems,
+                        subtotal:  subtotal.toFixed(2),
+                        status:    'Placed',
+                        method:    'WhatsApp',
+                        timestamp: new Date().toISOString()
+                    })
+                }).catch(e => console.log('[Order] Firebase error:', e.message));
+
+                delete sessions[sender];
+                return send(
+                    `✅ *Order Placed Successfully!*\n\n` +
+                    `*Items:*\n${cartLines(cart)}` +
+                    `${billBlock(cart)}\n\n` +
+                    `📍 *Address:* ${rawText}\n\n` +
+                    `_Our team will contact you shortly for payment details. Thank you! 🙏_\n\n` +
+                    `_Type *menu* to place another order_`
+                );
+            }
+        }
+
+        // ── AWAITING_PORTION — size selection ─────────────────────────────────
         if (session.step === 'AWAITING_PORTION') {
             const { pendingItem, cart, pendingItems } = session;
             const portions = pendingItem.portions;
@@ -411,14 +455,19 @@ async function startBot() {
             if (!isNaN(choice) && choice >= 1 && choice <= portions.length) {
                 portion = portions[choice - 1];
             } else {
+                // Try matching by name or size alias
                 portion = portions.find(p =>
                     p.name.toLowerCase() === text ||
                     SIZE_MAP[text]?.toLowerCase() === p.name.toLowerCase()
                 );
             }
+
             if (!portion) {
                 const opts = portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-                return send(`Choose a size for *${pendingItem.name}*:\n\n${opts}\n\n_Reply with number or size name (e.g. small)_`);
+                return send(
+                    `Please choose a size for *${pendingItem.name}*:\n\n${opts}\n\n` +
+                    `_Reply with a number (1, 2, 3) or size name (small, medium, large)_`
+                );
             }
 
             cart.push({ item: pendingItem, portion });
@@ -426,11 +475,13 @@ async function startBot() {
             if (next) {
                 sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: next, pendingItems, cart };
                 const opts = next.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-                return send(`✅ Added! Which size for *${next.name}*?\n\n${opts}`);
+                return send(`✅ *${portion.name} ${pendingItem.name}* added!\n\nNow, which size for *${next.name}*?\n\n${opts}`);
             }
+
             sessions[sender] = { step: 'AWAITING_DETAILS', cart };
             return send(
-                `✅ Added!\n\n*Your Order:*\n${cartLines(cart)}${billBlock(cart)}\n\n` +
+                `✅ *${portion.name} ${pendingItem.name}* added!\n\n` +
+                `*Your Order:*\n${cartLines(cart)}${billBlock(cart)}\n\n` +
                 `Please share your *Name, Phone & Address* to confirm.\n` +
                 `_Example: Ravi, 9876543210, 12 MG Road, Delhi_\n\n` +
                 `_Type *add* to add more | *cart* to review | *cancel* to cancel_`
