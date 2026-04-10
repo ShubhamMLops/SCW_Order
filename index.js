@@ -584,16 +584,16 @@ async function startBot() {
             );
         }
 
-        // ── Greetings ─────────────────────────────────────────────────────────
+         // ── Greetings ─────────────────────────────────────────────────────────
         if (/^(hi|hello|hey|hii|helo|namaste|hola|start|hy|hlo)$/i.test(text))
             return send(
                 `👋 *Welcome to ScwOrder!*\n\n` +
                 `🍕 Pizzas | 🍔 Burgers | 🥟 Momos | ☕ Beverages & more!\n\n` +
                 `Type *menu* to see everything.\n` +
-                `Or just tell me what you want:\n` +
-                `_cheese pizza small_\n_2 veg burger + cold coffee_`
+                `Or just tell me what you want:\n\n` +
+                `Single item: _cheese pizza small_\n` +
+                `Multiple items: _veg burger + momos_\n`
             );
-
         // ── Common queries ────────────────────────────────────────────────────
         if (/\b(thanks|thank you|ty|shukriya|dhanyawad|thx)\b/i.test(text))
             return send('😊 You\'re welcome! Come back anytime. 🙏');
