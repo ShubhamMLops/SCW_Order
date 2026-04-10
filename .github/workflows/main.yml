@@ -22,19 +22,8 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Install Ollama
-        run: curl -fsSL https://ollama.com/install.sh | sh
-
-      - name: Start Ollama + pull model
-        run: |
-          ollama serve &
-          sleep 4
-          ollama pull tinyllama
-
       - name: Start Bot
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
-          OLLAMA_URL: http://localhost:11434
-          OLLAMA_MODEL: tinyllama
         run: npm start
