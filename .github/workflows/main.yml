@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -20,8 +22,22 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama server
+        run: ollama serve &
+        # Give it a moment to start
+      
+      - name: Pull model (tinyllama ~600MB, fast responses)
+        run: |
+          sleep 3
+          ollama pull tinyllama
+
       - name: Start AI Bot
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
+          OLLAMA_URL: http://localhost:11434
+          OLLAMA_MODEL: tinyllama
         run: npm start
