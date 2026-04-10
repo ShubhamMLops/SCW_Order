@@ -747,8 +747,9 @@ async function startBot() {
                 `🍕 Pizzas | 🍔 Burgers | 🥟 Momos | ☕ Beverages & more!\n\n` +
                 `Type *menu* to see everything.\n` +
                 `Or just tell me what you want:\n\n` +
-                `Single item: _111_\n` +
-                `Multiple items: _111 + 121_\n`
+                `Single item: _Item Number_\n` +
+                `Multiple items: _Item Number 1 + Item Number 2_\n` +
+                `Example: _1 + 23_ (1 for Cheese Pizza and 23 is for Hot Coffee)\n`
             );
         // ── Common queries ────────────────────────────────────────────────────
         if (/\b(thanks|thank you|ty|shukriya|dhanyawad|thx)\b/i.test(text))
