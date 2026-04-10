@@ -62,8 +62,9 @@ async function getMenu() {
     } catch (e) { console.error('[Menu] Fetch error:', e); return []; }
 }
 
-// ── Menu text ─────────────────────────────────────────────────────────────────
+// ── Menu text — numbered list ─────────────────────────────────────────────────
 
+// Returns { text, indexMap } where indexMap[n] = dish
 function buildMenuText(menu) {
     const grouped = {};
     menu.forEach(d => {
@@ -73,36 +74,38 @@ function buildMenuText(menu) {
     });
 
     let txt = '*🍽️ ScwOrder — Menu*\n' + '─'.repeat(28) + '\n\n';
+    let n = 1;
+    const indexMap = {};
+
     Object.entries(grouped).forEach(([cat, items]) => {
         txt += `*${cat.toUpperCase()}*\n`;
         items.forEach(d => {
+            indexMap[n] = d;
             if (d.portions?.length) {
-                const sizes = d.portions.map(p => `${p.name} ₹${p.price}`).join(' | ');
-                txt += `  • *${d.name}* — ${sizes}\n`;
+                const sizes = d.portions.map(p => `${p.name[0]} ₹${p.price}`).join(' | ');
+                txt += `  *${n}.* ${d.name} — ${sizes}\n`;
             } else {
-                txt += `  • *${d.name}* — ₹${d.price || '—'}\n`;
+                txt += `  *${n}.* ${d.name} — ₹${d.price || '—'}\n`;
             }
+            n++;
         });
         txt += '\n';
     });
+
     txt += '─'.repeat(28) + '\n';
     txt += '📝 *How to order:*\n';
-    txt += 'Just type what you want!\n';
-    txt += 'Single item: _cheese pizza small_\n';
-    txt += 'Multiple items: _veg burger + momos_\n';
-    txt += '_2 veg burgers + cold coffee_\n\n';
-
+    txt += 'Type the item number(s) to order!\n';
+    txt += '_Example: 3_ (single item)\n';
+    txt += '_Example: 3 s_ (item 3, small size)\n';
+    txt += '_Example: 3,7,12_ (multiple items)\n\n';
     txt += '📌 *Commands:*\n';
-    txt += '*cart* — view your cart\n';
-    txt += '*add* — add more items\n';
-    txt += '*empty* — clear cart\n';
-    txt += '*cancel* — cancel order\n\n';
+    txt += '*cart* — view cart | *done* — checkout\n';
+    txt += '*add* — add more | *empty* — clear | *cancel* — cancel\n\n';
+    txt += '_5% GST applicable. Free delivery above ₹375._';
 
-    txt += '📢 *Note:*\n';
-    txt += '5% GST is applicable. Delivery charges will apply if the order value is below ₹375 or if the delivery location is beyond 3 km.\n';
+    return { text: txt, indexMap };
+}
 
-    return txt;
-    }
 // ── Fuzzy matcher ─────────────────────────────────────────────────────────────
 
 function levenshtein(a, b) {
@@ -396,7 +399,10 @@ async function startBot() {
         }
         if (/^(menu|price|prices|list|items)$/.test(text)) {
             const menu = await getMenu();
-            return send(buildMenuText(menu));
+            const { text: menuText, indexMap } = buildMenuText(menu);
+            // Store indexMap in session so user can order by number
+            sessions[sender] = { ...(sessions[sender] || {}), indexMap };
+            return send(menuText);
         }
         if (/^(cart|my cart|bag|view cart|show cart|mycart)$/.test(text)) {
             if (!session.cart?.length)
@@ -423,10 +429,74 @@ async function startBot() {
         }
         if (/^(add|add more|more)$/.test(text)) {
             if (session.cart?.length) {
-                sessions[sender] = { ...session, step: 'ADDING' };
-                return send(`➕ Sure! What else would you like to add?\n\n*Current cart:*\n${cartLines(session.cart)}\n\n_Just type the item name_`);
+                const menu = await getMenu();
+                const { text: menuText, indexMap } = buildMenuText(menu);
+                sessions[sender] = { ...session, step: 'ADDING', indexMap };
+                return send(`➕ *Current cart:*\n${cartLines(session.cart)}\n\n${menuText}`);
             }
-            return send('Tell me what you want to order!\n_Example: cheese pizza small_\n\nType *menu* to browse.');
+            return send('Tell me what you want to order!\n\nType *menu* to see the numbered list.');
+        }
+
+        // ── NUMBER-BASED ORDERING ─────────────────────────────────────────────
+        // Handles: "3", "3 s", "3,7,12", "3 small + 7" etc.
+        // Works any time user has an indexMap (after viewing menu)
+        const indexMap = (sessions[sender] || {}).indexMap;
+        if (indexMap) {
+            // Parse number entries: "3 s", "7 m", "12", "3,7,12"
+            // Split on comma or + 
+            const parts = text.split(/[,+]/).map(p => p.trim()).filter(Boolean);
+            const resolved = [], unresolved = [];
+
+            for (const part of parts) {
+                const tokens = part.split(/\s+/);
+                const num    = parseInt(tokens[0]);
+                if (!isNaN(num) && indexMap[num]) {
+                    const item = indexMap[num];
+                    // Check for size in remaining tokens
+                    let portion = null;
+                    if (item.portions?.length) {
+                        const sizeToken = tokens.slice(1).find(t => SIZE_MAP[t] || item.portions.find(p => p.name.toLowerCase() === t));
+                        if (sizeToken) {
+                            const sizeName = SIZE_MAP[sizeToken] || sizeToken;
+                            portion = item.portions.find(p => p.name.toLowerCase() === sizeName.toLowerCase());
+                        }
+                    }
+                    resolved.push({ item, portion, needsPortion: !!(item.portions?.length && !portion) });
+                } else if (tokens[0] && !isNaN(parseInt(tokens[0]))) {
+                    unresolved.push(part); // number out of range
+                } else {
+                    // Not a number — skip (will fall through to text matching below)
+                    unresolved.push(null);
+                }
+            }
+
+            // Only process if at least one valid number was found
+            const validResolved = resolved.filter(Boolean);
+            const invalidParts  = unresolved.filter(Boolean);
+
+            if (validResolved.length) {
+                const existingCart = (sessions[sender] || {}).cart || [];
+                const needsPortion = validResolved.filter(e => e.needsPortion);
+                const readyItems   = validResolved.filter(e => !e.needsPortion).map(e => ({ item: e.item, portion: e.portion }));
+                const cart         = [...existingCart, ...readyItems];
+                const warnMsg      = invalidParts.length ? `\n\n⚠️ _Invalid numbers:_ ${invalidParts.join(', ')}` : '';
+
+                if (needsPortion.length) {
+                    const first = needsPortion.shift();
+                    sessions[sender] = { ...sessions[sender], step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
+                    const opts = first.item.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                    return send(`Which size for *${first.item.name}*?\n\n${opts}\n\n_Reply with number or: s=Small, m=Medium, l=Large_${warnMsg}`);
+                }
+
+                sessions[sender] = { ...sessions[sender], step: 'AWAITING_DETAILS', cart };
+                const { subtotal } = calcBill(cart);
+                return send(
+                    `🛒 *Your Cart:*\n${cartLines(cart)}` +
+                    `${billBlock(cart)}\n\n` +
+                    `Type more numbers to add items, or:\n` +
+                    `*done* — checkout | *cart* — review | *cancel* — cancel${warnMsg}`
+                );
+            }
         }
 
         // ── AWAITING_DETAILS — collect name/phone/address ─────────────────────
