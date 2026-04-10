@@ -226,12 +226,10 @@ function cartLines(cart) {
 }
 
 function billBlock(cart) {
-    const { subtotal, gst, delivery, total } = calcBill(cart);
+    const { subtotal } = calcBill(cart);
     return `\n\n💰 *Bill:*\n` +
-        `Subtotal : ₹${subtotal}\n` +
-        `GST (5%) : ₹${gst}\n` +
-        `Delivery : ${delivery > 0 ? `₹${delivery}` : '*FREE* 🎉'}\n` +
-        `*Total   : ₹${total}*`;
+        `Subtotal : ₹${subtotal}\n\n` +
+        `_Note: 5% GST applicable. Delivery charges will apply if order value is below ₹375 or delivery location is beyond 3 km._`;
 }
 
 // ── Bot ───────────────────────────────────────────────────────────────────────
@@ -356,7 +354,7 @@ async function startBot() {
 
             const { cart } = session;
             const waNumber = sender.split('@')[0];
-            const { subtotal, gst, delivery, total } = calcBill(cart);
+            const { subtotal } = calcBill(cart);
             const orderItems = cart.map(e => ({
                 id: e.item.id,
                 name: e.portion ? `${e.item.name} (${e.portion.name})` : e.item.name,
@@ -371,8 +369,7 @@ async function startBot() {
                     userId: 'whatsapp_' + waNumber, userEmail: 'whatsapp@scworder.com',
                     phone: phoneMatch[0], waNumber, address: rawText,
                     location: { lat: 0, lng: 0 }, items: orderItems,
-                    subtotal: subtotal.toFixed(2), gst: gst.toFixed(2),
-                    deliveryFee: delivery, total: total.toFixed(2),
+                    subtotal: subtotal.toFixed(2),
                     status: 'Placed', method: 'WhatsApp',
                     timestamp: new Date().toISOString()
                 })
