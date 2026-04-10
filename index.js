@@ -1,6 +1,9 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('baileys');
 const QRCode = require('qrcode');
 const pino   = require('pino');
+
+// Force stdout flush so QR appears immediately in GitHub Actions logs
+if (process.stdout._handle) process.stdout._handle.setBlocking(true);
 const fs     = require('fs');
 const path   = require('path');
 
@@ -253,11 +256,15 @@ async function startBot() {
         if (qr) {
             const b64 = (await QRCode.toDataURL(qr, { errorCorrectionLevel: 'H', scale: 8, margin: 2 }))
                 .replace('data:image/png;base64,', '');
-            console.log('\n════════════════════════════════════');
-            console.log('Decode at: https://base64.guru/converter/decode/image');
-            console.log('BASE64_START');
-            (b64.match(/.{1,76}/g) || []).forEach(l => console.log(l));
-            console.log('BASE64_END\n════════════════════════════════════\n');
+            process.stdout.write('\n════════════════════════════════════\n');
+            process.stdout.write('QR CODE — copy lines between START/END\n');
+            process.stdout.write('Remove newlines, paste at:\n');
+            process.stdout.write('https://base64.guru/converter/decode/image\n');
+            process.stdout.write('════════════════════════════════════\n');
+            process.stdout.write('BASE64_START\n');
+            (b64.match(/.{1,76}/g) || []).forEach(l => process.stdout.write(l + '\n'));
+            process.stdout.write('BASE64_END\n');
+            process.stdout.write('════════════════════════════════════\n\n');
         }
         if (connection === 'open') {
             console.log('✅ ScwOrder Bot ONLINE');
