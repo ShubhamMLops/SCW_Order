@@ -167,15 +167,23 @@ function findBestMatch(query, menu) {
 
     if (!scored.length) return null;
 
-    // Check for ambiguity: top 2 scores within 0.1 of each other AND different names
-    if (scored.length >= 2 && (scored[0].score - scored[1].score) < 0.1) {
-        // Only flag as ambiguous if names are genuinely different (not just size variants)
+    // Check for ambiguity: if multiple items score well, show a list
+    if (scored.length >= 2) {
         const name0 = scored[0].item.name.toLowerCase();
         const name1 = scored[1].item.name.toLowerCase();
-        if (!name0.includes(name1) && !name1.includes(name0)) {
+        // Flag as ambiguous if scores are close OR if 3+ items match well
+        const scoresClose = (scored[0].score - scored[1].score) < 0.15;
+        const manyMatches = scored.length >= 3 && scored[2].score >= THRESHOLD;
+        if (scoresClose && !name0.includes(name1) && !name1.includes(name0)) {
             return {
                 ambiguous: true,
-                candidates: scored.slice(0, 3).map(x => x.item)
+                candidates: scored.slice(0, Math.min(5, scored.length)).map(x => x.item)
+            };
+        }
+        if (manyMatches) {
+            return {
+                ambiguous: true,
+                candidates: scored.slice(0, Math.min(5, scored.length)).map(x => x.item)
             };
         }
     }
