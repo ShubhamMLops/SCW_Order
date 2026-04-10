@@ -26,4 +26,5 @@ jobs:
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
-        run: npm start
+          NODE_NO_WARNINGS: 1
+        run: node --no-warnings index.js
