@@ -1,0 +1,49 @@
+name: Watchdog — Keep Bot Alive
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Check if bot is running, restart if not
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Check both in_progress AND queued (newly started jobs show as queued first)
+          IN_PROGRESS=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/workflows/main.yml/runs?per_page=5&status=in_progress" \
+            | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('workflow_runs',[])))")
+
+          QUEUED=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/workflows/main.yml/runs?per_page=5&status=queued" \
+            | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('workflow_runs',[])))")
+
+          TOTAL=$((IN_PROGRESS + QUEUED))
+          echo "Bot runs — in_progress: $IN_PROGRESS, queued: $QUEUED, total: $TOTAL"
+
+          if [ "$TOTAL" = "0" ]; then
+            echo "Bot is NOT running — triggering restart..."
+            curl -s -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/actions/workflows/main.yml/dispatches" \
+              -d '{"ref":"main"}'
+            echo "Restart triggered!"
+          else
+            echo "Bot is running — no action needed."
+          fi
