@@ -100,7 +100,7 @@ function buildMenuText(menu) {
     return txt;
 }
 
-// ── Fuzzy matcher (Levenshtein for typo tolerance) ────────────────────────────
+// ── Fuzzy matcher ─────────────────────────────────────────────────────────────
 
 function levenshtein(a, b) {
     const dp = Array.from({ length: a.length + 1 }, (_, i) =>
@@ -114,13 +114,22 @@ function levenshtein(a, b) {
     return dp[a.length][b.length];
 }
 
-function wordScore(queryTokens, nameTokens) {
-    let score = 0;
+// Returns 0–1 score: how well queryTokens match nameTokens (case-insensitive)
+function matchScore(queryTokens, nameTokens) {
+    let matched = 0;
     for (const nt of nameTokens) {
-        if (queryTokens.includes(nt)) { score += 2; continue; }
-        if (nt.length >= 4 && Math.min(...queryTokens.map(qt => levenshtein(qt, nt))) <= 2) score += 1;
+        // Exact match
+        if (queryTokens.includes(nt)) { matched++; continue; }
+        // Substring match (e.g. "choc" matches "chocolate")
+        if (queryTokens.some(qt => nt.startsWith(qt) && qt.length >= 3)) { matched += 0.8; continue; }
+        // Fuzzy match for longer words (typo tolerance)
+        if (nt.length >= 4) {
+            const minDist = Math.min(...queryTokens.map(qt => levenshtein(qt, nt)));
+            if (minDist <= 1) { matched += 0.9; continue; }
+            if (minDist <= 2) { matched += 0.5; continue; }
+        }
     }
-    return score;
+    return matched / nameTokens.length; // 0.0 to 1.0
 }
 
 const SIZE_MAP = {
@@ -131,31 +140,61 @@ const SIZE_MAP = {
     '250ml': '250ml', '500ml': '500ml', '1l': '1L', '1ltr': '1L'
 };
 
-function findBestMatch(query, menu) {
-    const tokens  = query.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-    let bestItem  = null;
-    let bestScore = 0;
+const SIZE_WORDS = new Set(Object.keys(SIZE_MAP));
 
-    for (const item of menu) {
-        const nameTokens = item.name.toLowerCase().split(/\s+/);
-        const score      = wordScore(tokens, nameTokens);
-        if (score > bestScore && score >= Math.ceil(nameTokens.length / 2)) {
-            bestScore = score;
-            bestItem  = item;
+// Returns { item, portion, needsPortion } for best match, or null
+// Returns { ambiguous: true, candidates: [] } if multiple items score similarly
+function findBestMatch(query, menu) {
+    // Normalize: lowercase, remove punctuation
+    const allTokens  = query.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+    // Separate size tokens from food tokens
+    const sizeTokens = allTokens.filter(t => SIZE_WORDS.has(t));
+    const foodTokens = allTokens.filter(t => !SIZE_WORDS.has(t));
+
+    const THRESHOLD = 0.60; // 60% match required
+
+    const scored = menu
+        .map(item => {
+            const nameTokens = item.name.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+            const score = matchScore(foodTokens.length ? foodTokens : allTokens, nameTokens);
+            return { item, score };
+        })
+        .filter(x => x.score >= THRESHOLD)
+        .sort((a, b) => b.score - a.score);
+
+    if (!scored.length) return null;
+
+    // Check for ambiguity: top 2 scores within 0.1 of each other AND different names
+    if (scored.length >= 2 && (scored[0].score - scored[1].score) < 0.1) {
+        // Only flag as ambiguous if names are genuinely different (not just size variants)
+        const name0 = scored[0].item.name.toLowerCase();
+        const name1 = scored[1].item.name.toLowerCase();
+        if (!name0.includes(name1) && !name1.includes(name0)) {
+            return {
+                ambiguous: true,
+                candidates: scored.slice(0, 3).map(x => x.item)
+            };
         }
     }
-    if (!bestItem) return null;
 
+    const bestItem = scored[0].item;
+
+    // Find portion from size tokens
     let foundPortion = null;
     if (bestItem.portions?.length) {
-        for (const t of tokens) {
+        for (const t of sizeTokens) {
             const sizeName = SIZE_MAP[t];
             if (sizeName) {
                 foundPortion = bestItem.portions.find(p => p.name.toLowerCase() === sizeName.toLowerCase());
                 if (foundPortion) break;
             }
-            foundPortion = bestItem.portions.find(p => p.name.toLowerCase() === t);
-            if (foundPortion) break;
+        }
+        // Also try matching portion names directly from all tokens
+        if (!foundPortion) {
+            for (const t of allTokens) {
+                foundPortion = bestItem.portions.find(p => p.name.toLowerCase() === t);
+                if (foundPortion) break;
+            }
         }
     }
 
@@ -182,23 +221,32 @@ function parseQuantityAndQuery(part) {
 
 function parseOrder(input, menu) {
     const parts    = input.split(/\s*\+\s*|\s+and\s+/i).map(p => p.trim()).filter(Boolean);
-    const resolved = [], unresolved = [];
+    const resolved = [], unresolved = [], ambiguous = [];
     for (const part of parts) {
         const { qty, query } = parseQuantityAndQuery(part);
         const match = findBestMatch(query, menu);
-        if (match) for (let i = 0; i < qty; i++) resolved.push({ ...match });
-        else unresolved.push(part);
+        if (!match) {
+            unresolved.push(part);
+        } else if (match.ambiguous) {
+            ambiguous.push({ query: part, candidates: match.candidates });
+        } else {
+            for (let i = 0; i < qty; i++) resolved.push({ ...match });
+        }
     }
-    return { resolved, unresolved };
+    return { resolved, unresolved, ambiguous };
 }
 
 // ── "Did you mean?" suggestions ───────────────────────────────────────────────
 
 function getSuggestions(input, menu, limit = 3) {
-    const tokens = input.toLowerCase().split(/\s+/);
+    const tokens = input.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
     return menu
-        .map(item => ({ item, score: wordScore(tokens, item.name.toLowerCase().split(/\s+/)) }))
-        .filter(x => x.score > 0)
+        .map(item => {
+            const nameTokens = item.name.toLowerCase().split(/\s+/);
+            const score = matchScore(tokens, nameTokens);
+            return { item, score };
+        })
+        .filter(x => x.score > 0.2)
         .sort((a, b) => b.score - a.score)
         .slice(0, limit)
         .map(x => x.item.name);
@@ -488,6 +536,51 @@ async function startBot() {
             );
         }
 
+        // ── AWAITING_CLARIFICATION — user picks from ambiguous matches ───────
+        if (session.step === 'AWAITING_CLARIFICATION') {
+            const { ambiguousCandidates, pendingAmbiguous, pendingResolved } = session;
+            const choice = parseInt(text);
+            if (isNaN(choice) || choice < 1 || choice > ambiguousCandidates.length) {
+                const opts = ambiguousCandidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+                return send(`Please reply with a number 1–${ambiguousCandidates.length}:\n\n${opts}`);
+            }
+            const chosenItem = ambiguousCandidates[choice - 1];
+            const newResolved = [...pendingResolved, {
+                item: chosenItem,
+                portion: null,
+                needsPortion: !!(chosenItem.portions?.length)
+            }];
+
+            // If more ambiguous items pending, ask next one
+            if (pendingAmbiguous?.length) {
+                const next = pendingAmbiguous[0];
+                sessions[sender] = { ...session, step: 'AWAITING_CLARIFICATION', ambiguousQuery: next.query, ambiguousCandidates: next.candidates, pendingAmbiguous: pendingAmbiguous.slice(1), pendingResolved: newResolved };
+                const opts = next.candidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+                return send(`✅ Got it!\n\nNow, which one for "*${next.query}*"?\n\n${opts}`);
+            }
+
+            // All clarified — proceed with resolved items
+            const existingCart = session.cart || [];
+            const needsPortion = newResolved.filter(e => e.needsPortion);
+            const readyItems   = newResolved.filter(e => !e.needsPortion).map(e => ({ item: e.item, portion: e.portion }));
+            const cart         = [...existingCart, ...readyItems];
+
+            if (needsPortion.length) {
+                const first = needsPortion.shift();
+                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
+                const opts = first.item.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                return send(`Which size for *${first.item.name}*?\n\n${opts}`);
+            }
+
+            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+            return send(
+                `🛒 *Order Summary:*\n${cartLines(cart)}${billBlock(cart)}\n\n` +
+                `Please share your *Name, Phone & Address*\n` +
+                `_Example: Ravi, 9876543210, 12 MG Road, Delhi_\n\n` +
+                `_Type *add* to add more | *cancel* to cancel_`
+            );
+        }
+
         // ── Greetings ─────────────────────────────────────────────────────────
         if (/^(hi|hello|hey|hii|helo|namaste|hola|start|hy|hlo)$/i.test(text))
             return send(
@@ -557,7 +650,15 @@ async function startBot() {
 
         // ── Rule-based order matching ─────────────────────────────────────────
         const menu = await getMenu();
-        const { resolved, unresolved } = parseOrder(text, menu);
+        const { resolved, unresolved, ambiguous } = parseOrder(text, menu);
+
+        // Handle ambiguous items first — ask user to clarify
+        if (ambiguous.length) {
+            const first = ambiguous[0];
+            sessions[sender] = { ...session, step: 'AWAITING_CLARIFICATION', ambiguousQuery: first.query, ambiguousCandidates: first.candidates, pendingAmbiguous: ambiguous.slice(1), pendingResolved: resolved };
+            const opts = first.candidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+            return send(`🤔 Did you mean which one for "*${first.query}*"?\n\n${opts}\n\n_Reply with a number_`);
+        }
 
         if (resolved.length) {
             const existingCart = session.cart || [];
