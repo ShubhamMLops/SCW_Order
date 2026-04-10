@@ -333,7 +333,9 @@ async function startBot() {
         version, auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ['ScwOrder', 'Chrome', '1.0']
+        browser: ['ScwOrder', 'Chrome', '1.0'],
+        // Suppress Bad MAC noise — these are harmless decryption errors from old messages
+        getMessage: async () => ({ conversation: '' })
     });
 
     let saveDebounce = null;
@@ -359,8 +361,8 @@ async function startBot() {
         }
         if (connection === 'close') {
             const code = lastDisconnect?.error?.output?.statusCode;
-            if (code === DisconnectReason.loggedOut || code === 401 || code === 403) {
-                console.log('[Session] Auth failure — clearing session for fresh QR...');
+            if (code === DisconnectReason.loggedOut || code === 401 || code === 403 || code === 440) {
+                console.log(`[Session] Clearing session (code ${code}) — will show fresh QR...`);
                 try { await fetch(`${FIREBASE_URL}/wa_session.json`, { method: 'DELETE' }); } catch(e) {}
                 try {
                     if (fs.existsSync(SESSION_DIR)) fs.rmSync(SESSION_DIR, { recursive: true, force: true });
@@ -491,8 +493,86 @@ async function startBot() {
             return send('Tell me what you want to order!\n\nType *menu* to see the numbered list.');
         }
 
-        // ── NUMBER-BASED ORDERING ─────────────────────────────────────────────
-        // Handles: "3", "3 s", "3,7,12", "3 small + 7" etc.
+        // ── AWAITING_PORTION — size selection (must be before number ordering) ──
+        if (session.step === 'AWAITING_PORTION') {
+            const { pendingItem, cart, pendingItems } = session;
+            const portions = pendingItem.portions;
+            const choice   = parseInt(text);
+            let portion    = null;
+
+            if (!isNaN(choice) && choice >= 1 && choice <= portions.length) {
+                portion = portions[choice - 1];
+            } else {
+                portion = portions.find(p =>
+                    p.name.toLowerCase() === text ||
+                    SIZE_MAP[text]?.toLowerCase() === p.name.toLowerCase()
+                );
+            }
+
+            if (!portion) {
+                const opts = portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                return send(
+                    `Please choose a size for *${pendingItem.name}*:\n\n${opts}\n\n` +
+                    `_Reply with a number (1, 2, 3) or size name (s/m/l)_`
+                );
+            }
+
+            cart.push({ item: pendingItem, portion });
+            const next = pendingItems?.shift();
+            if (next) {
+                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: next, pendingItems, cart };
+                const opts = next.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                return send(`✅ *${portion.name} ${pendingItem.name}* added!\n\nNow, which size for *${next.name}*?\n\n${opts}`);
+            }
+
+            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+            return send(
+                `✅ *${portion.name} ${pendingItem.name}* added!\n\n` +
+                `*Your Order:*\n${cartLines(cart)}${billBlock(cart)}\n\n` +
+                `Please share your *Name, Phone & Address* to confirm.\n` +
+                `_Example: Ravi, 9876543210, 12 MG Road, Delhi_\n\n` +
+                `_Type *add* to add more | *cart* to review | *cancel* to cancel_`
+            );
+        }
+
+        // ── AWAITING_CLARIFICATION — must be before number ordering too ───────
+        if (session.step === 'AWAITING_CLARIFICATION') {
+            const { ambiguousCandidates, pendingAmbiguous, pendingResolved } = session;
+            const choice = parseInt(text);
+            if (isNaN(choice) || choice < 1 || choice > ambiguousCandidates.length) {
+                const opts = ambiguousCandidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+                return send(`Please reply with a number 1–${ambiguousCandidates.length}:\n\n${opts}`);
+            }
+            const chosenItem = ambiguousCandidates[choice - 1];
+            const newResolved = [...pendingResolved, {
+                item: chosenItem, portion: null, needsPortion: !!(chosenItem.portions?.length)
+            }];
+            if (pendingAmbiguous?.length) {
+                const next = pendingAmbiguous[0];
+                sessions[sender] = { ...session, step: 'AWAITING_CLARIFICATION', ambiguousQuery: next.query, ambiguousCandidates: next.candidates, pendingAmbiguous: pendingAmbiguous.slice(1), pendingResolved: newResolved };
+                const opts = next.candidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+                return send(`✅ Got it!\n\nNow, which one for "*${next.query}*"?\n\n${opts}`);
+            }
+            const existingCart = (sessions[sender] || {}).cart || [];
+            const needsPortion = newResolved.filter(e => e.needsPortion);
+            const readyItems   = newResolved.filter(e => !e.needsPortion).map(e => ({ item: e.item, portion: e.portion }));
+            const cart         = [...existingCart, ...readyItems];
+            if (needsPortion.length) {
+                const first = needsPortion.shift();
+                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
+                const opts = first.item.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                return send(`Which size for *${first.item.name}*?\n\n${opts}`);
+            }
+            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+            return send(
+                `🛒 *Order Summary:*\n${cartLines(cart)}${billBlock(cart)}\n\n` +
+                `Please share your *Name, Phone & Address*\n` +
+                `_Example: Ravi, 9876543210, 12 MG Road, Delhi_\n\n` +
+                `_Type *add* to add more | *cancel* to cancel_`
+            );
+        }
+
+        // ── NUMBER-BASED ORDERING ─────────────────────────────────────────────        // Handles: "3", "3 s", "3,7,12", "3 small + 7" etc.
         // Works any time user has an indexMap (after viewing menu)
         const indexMap = (sessions[sender] || {}).indexMap;
         if (indexMap) {
@@ -615,94 +695,6 @@ async function startBot() {
                     `_Type *menu* to place another order_`
                 );
             }
-        }
-
-        // ── AWAITING_PORTION — size selection ─────────────────────────────────
-        if (session.step === 'AWAITING_PORTION') {
-            const { pendingItem, cart, pendingItems } = session;
-            const portions = pendingItem.portions;
-            const choice   = parseInt(text);
-            let portion    = null;
-
-            if (!isNaN(choice) && choice >= 1 && choice <= portions.length) {
-                portion = portions[choice - 1];
-            } else {
-                // Try matching by name or size alias
-                portion = portions.find(p =>
-                    p.name.toLowerCase() === text ||
-                    SIZE_MAP[text]?.toLowerCase() === p.name.toLowerCase()
-                );
-            }
-
-            if (!portion) {
-                const opts = portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-                return send(
-                    `Please choose a size for *${pendingItem.name}*:\n\n${opts}\n\n` +
-                    `_Reply with a number (1, 2, 3) or size name (small, medium, large)_`
-                );
-            }
-
-            cart.push({ item: pendingItem, portion });
-            const next = pendingItems?.shift();
-            if (next) {
-                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: next, pendingItems, cart };
-                const opts = next.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-                return send(`✅ *${portion.name} ${pendingItem.name}* added!\n\nNow, which size for *${next.name}*?\n\n${opts}`);
-            }
-
-            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
-            return send(
-                `✅ *${portion.name} ${pendingItem.name}* added!\n\n` +
-                `*Your Order:*\n${cartLines(cart)}${billBlock(cart)}\n\n` +
-                `Please share your *Name, Phone & Address* to confirm.\n` +
-                `_Example: Ravi, 9876543210, 12 MG Road, Delhi_\n\n` +
-                `_Type *add* to add more | *cart* to review | *cancel* to cancel_`
-            );
-        }
-
-        // ── AWAITING_CLARIFICATION — user picks from ambiguous matches ───────
-        if (session.step === 'AWAITING_CLARIFICATION') {
-            const { ambiguousCandidates, pendingAmbiguous, pendingResolved } = session;
-            const choice = parseInt(text);
-            if (isNaN(choice) || choice < 1 || choice > ambiguousCandidates.length) {
-                const opts = ambiguousCandidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
-                return send(`Please reply with a number 1–${ambiguousCandidates.length}:\n\n${opts}`);
-            }
-            const chosenItem = ambiguousCandidates[choice - 1];
-            const newResolved = [...pendingResolved, {
-                item: chosenItem,
-                portion: null,
-                needsPortion: !!(chosenItem.portions?.length)
-            }];
-
-            // If more ambiguous items pending, ask next one
-            if (pendingAmbiguous?.length) {
-                const next = pendingAmbiguous[0];
-                sessions[sender] = { ...session, step: 'AWAITING_CLARIFICATION', ambiguousQuery: next.query, ambiguousCandidates: next.candidates, pendingAmbiguous: pendingAmbiguous.slice(1), pendingResolved: newResolved };
-                const opts = next.candidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
-                return send(`✅ Got it!\n\nNow, which one for "*${next.query}*"?\n\n${opts}`);
-            }
-
-            // All clarified — proceed with resolved items
-            const existingCart = (sessions[sender] || {}).cart || [];
-            const needsPortion = newResolved.filter(e => e.needsPortion);
-            const readyItems   = newResolved.filter(e => !e.needsPortion).map(e => ({ item: e.item, portion: e.portion }));
-            const cart         = [...existingCart, ...readyItems];
-
-            if (needsPortion.length) {
-                const first = needsPortion.shift();
-                sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
-                const opts = first.item.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-                return send(`Which size for *${first.item.name}*?\n\n${opts}`);
-            }
-
-            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
-            return send(
-                `🛒 *Order Summary:*\n${cartLines(cart)}${billBlock(cart)}\n\n` +
-                `Please share your *Name, Phone & Address*\n` +
-                `_Example: Ravi, 9876543210, 12 MG Road, Delhi_\n\n` +
-                `_Type *add* to add more | *cancel* to cancel_`
-            );
         }
 
         // ── ADDING step — skip all keyword checks, go straight to order matching ──
