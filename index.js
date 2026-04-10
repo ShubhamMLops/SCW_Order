@@ -428,8 +428,8 @@ async function startBot() {
         }
         if (/^(add|add more|more)$/.test(text)) {
             if (session.cart?.length) {
-                sessions[sender] = { ...session, step: null };
-                return send(`➕ Sure! What else would you like to add?\n\n*Current cart:*\n${cartLines(session.cart)}`);
+                sessions[sender] = { ...session, step: 'ADDING' };
+                return send(`➕ Sure! What else would you like to add?\n\n*Current cart:*\n${cartLines(session.cart)}\n\n_Just type the item name_`);
             }
             return send('Tell me what you want to order!\n_Example: cheese pizza small_\n\nType *menu* to browse.');
         }
@@ -586,7 +586,50 @@ async function startBot() {
             );
         }
 
-         // ── Greetings ─────────────────────────────────────────────────────────
+        // ── ADDING step — skip all keyword checks, go straight to order matching ──
+        if (session.step === 'ADDING') {
+            const menu = await getMenu();
+            const { resolved, unresolved, ambiguous } = parseOrder(text, menu);
+
+            if (ambiguous.length) {
+                const first = ambiguous[0];
+                sessions[sender] = { ...session, step: 'AWAITING_CLARIFICATION', ambiguousQuery: first.query, ambiguousCandidates: first.candidates, pendingAmbiguous: ambiguous.slice(1), pendingResolved: resolved };
+                const opts = first.candidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+                return send(`🤔 Which one did you mean for "*${first.query}*"?\n\n${opts}\n\n_Reply with a number_`);
+            }
+
+            if (resolved.length) {
+                const existingCart = (sessions[sender] || {}).cart || [];
+                const needsPortion = resolved.filter(e => e.needsPortion);
+                const readyItems   = resolved.filter(e => !e.needsPortion).map(e => ({ item: e.item, portion: e.portion }));
+                const cart         = [...existingCart, ...readyItems];
+                const warnMsg      = unresolved.length ? `\n\n⚠️ _Couldn't find:_ ${unresolved.join(', ')}` : '';
+
+                if (needsPortion.length) {
+                    const first = needsPortion.shift();
+                    sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
+                    const opts = first.item.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
+                    return send(`Which size for *${first.item.name}*?\n\n${opts}${warnMsg}`);
+                }
+
+                sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+                return send(
+                    `🛒 *Updated Cart:*\n${cartLines(cart)}` +
+                    `${billBlock(cart)}\n\n` +
+                    `Please share your *Name, Phone & Address*\n` +
+                    `_Example: Ravi, 9876543210, 12 MG Road, Delhi_\n\n` +
+                    `_Type *add* to add more | *empty* to clear | *cancel* to cancel_${warnMsg}`
+                );
+            }
+
+            // Item not found while in ADDING mode
+            const suggestions = getSuggestions(text, menu, 3);
+            if (suggestions.length)
+                return send(`🤔 Couldn't find "*${rawText}*"\n\n*Did you mean:*\n${suggestions.map(s => `• ${s}`).join('\n')}\n\nOr type *menu* to browse.`);
+            return send(`Couldn't find that item. Type *menu* to browse, or try a different name.`);
+        }
+
+        // ── Greetings ─────────────────────────────────────────────────────────
         if (/^(hi|hello|hey|hii|helo|namaste|hola|start|hy|hlo)$/i.test(text))
             return send(
                 `👋 *Welcome to ScwOrder!*\n\n` +
