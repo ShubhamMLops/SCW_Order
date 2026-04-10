@@ -3,13 +3,16 @@ name: ScwOrder-WhatsApp-Bot
 on:
   workflow_dispatch:
   schedule:
-    # Restart every 5 hours — before GitHub's 6h limit kills it
     - cron: '0 */5 * * *'
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 350  # 5h 50min — leaves 10min buffer before 6h GitHub limit
+    timeout-minutes: 350
 
     steps:
       - name: Checkout Code
