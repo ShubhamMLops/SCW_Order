@@ -29,12 +29,12 @@ jobs:
         run: |
           ollama serve &
           sleep 4
-          ollama pull phi3:mini
+          ollama pull tinyllama
 
       - name: Start Bot
         env:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
           OLLAMA_URL: http://localhost:11434
-          OLLAMA_MODEL: phi3:mini
+          OLLAMA_MODEL: tinyllama
         run: npm start
