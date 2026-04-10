@@ -711,3 +711,8 @@ async function startBot() {
 }
 
 startBot().catch(err => console.error('[Fatal]', err));
+
+// Keep process alive — log heartbeat every 30 min so GitHub Actions doesn't kill idle process
+setInterval(() => {
+    console.log('[Heartbeat] Bot running — ' + new Date().toLocaleString('en-IN'));
+}, 30 * 60 * 1000);
