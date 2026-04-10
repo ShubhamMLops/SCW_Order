@@ -9,77 +9,42 @@ const OLLAMA_MODEL  = process.env.OLLAMA_MODEL || 'tinyllama';
 const DELIVERY_FEE  = 50;
 const GST_RATE      = 0.05;
 
-// ── Ollama AI — structured order brain ───────────────────────────────────────
-
-// Conversation history per sender (last 10 messages for context)
+// ── Ollama AI — only for greetings & questions ───────────────────────────────
 const chatHistory = {};
 
-function getHistory(sender) {
-    if (!chatHistory[sender]) chatHistory[sender] = [];
-    return chatHistory[sender];
-}
-
 function addHistory(sender, role, content) {
-    const h = getHistory(sender);
-    h.push({ role, content });
-    if (h.length > 10) h.splice(0, h.length - 10); // keep last 10
-}
-
-function buildMenuContext(menu) {
-    return menu.map(d => {
-        if (d.portions && d.portions.length) {
-            const sizes = d.portions.map(p => `${p.name}=₹${p.price}`).join(', ');
-            return `${d.name} [${d.category}] sizes: ${sizes}`;
-        }
-        return `${d.name} [${d.category}] ₹${d.price}`;
-    }).join('\n');
+    if (!chatHistory[sender]) chatHistory[sender] = [];
+    chatHistory[sender].push({ role, content });
+    if (chatHistory[sender].length > 6) chatHistory[sender].splice(0, 2);
 }
 
 async function askAI(sender, userMessage, menu) {
-    const menuCtx  = buildMenuContext(menu);
-    const history  = getHistory(sender);
-    const histText = history.map(h => `${h.role === 'user' ? 'Customer' : 'Bot'}: ${h.content}`).join('\n');
+    // Keep menu context tiny — just names and prices
+    const menuShort = menu.slice(0, 20).map(d =>
+        d.portions ? `${d.name}(${d.portions.map(p=>p.name[0]+'₹'+p.price).join('/')})` : `${d.name}₹${d.price}`
+    ).join(', ');
 
-    const systemPrompt = `You are an AI order-taking assistant for ScwOrder food restaurant.
-Your job is to help customers order food via WhatsApp.
-
-MENU (format: Name [category] price or sizes):
-${menuCtx}
-
-RULES:
-1. Always respond with valid JSON only — no extra text, no markdown.
-2. JSON format: { "intent": "ORDER"|"QUESTION"|"GREETING"|"DONE"|"CANCEL"|"UNCLEAR", "reply": "your message to customer", "items": [{"name":"exact dish name from menu","portion":"Small|Medium|Large or null","qty":1}] }
-3. "items" only present when intent is "ORDER".
-4. If customer mentions a dish but no size and it has sizes, ask for size and set intent "QUESTION".
-5. If customer provides name+phone+address after ordering, set intent "DONE" and include their details in reply.
-6. Match dish names flexibly — "cheese pizza s" = Cheese Pizza Small.
-7. Keep replies friendly, short, in the same language as the customer.
-8. If item not on menu, say so and suggest similar items.
-9. Never make up prices — use exact prices from menu.
-
-CONVERSATION SO FAR:
-${histText}`;
+    const prompt =
+        `You are ScwOrder food bot. Menu: ${menuShort}\n` +
+        `Reply in 1-2 sentences. If ordering, say "just type the item name".\n` +
+        `Customer: ${userMessage}\nBot:`;
 
     try {
         const res = await fetch(`${OLLAMA_URL}/api/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model:  OLLAMA_MODEL,
-                prompt: `${systemPrompt}\n\nCustomer: ${userMessage}\nBot (JSON only):`,
+                model: OLLAMA_MODEL,
+                prompt,
                 stream: false,
-                format: 'json',
-                options: { temperature: 0.3, num_predict: 300 }
+                options: { temperature: 0.5, num_predict: 80 }
             }),
-            signal: AbortSignal.timeout(20000)
+            signal: AbortSignal.timeout(8000) // 8s max
         });
         const data = await res.json();
-        const raw  = data.response?.trim() || '{}';
-        // Extract JSON even if model adds extra text
-        const match = raw.match(/\{[\s\S]*\}/);
-        return match ? JSON.parse(match[0]) : null;
+        return data.response?.trim() || null;
     } catch (e) {
-        console.log('AI error:', e.message);
+        console.log('AI timeout/error — using fallback');
         return null;
     }
 }
@@ -404,87 +369,16 @@ async function startBot() {
             return;
         }
 
-        // ── AI-FIRST: let the model understand intent ─────────────────────────
-        addHistory(sender, 'user', rawText);
-
+        // ── Rule-based order matching (fast, reliable) ────────────────────────
         const menu = await getMenu();
-        let handled = false;
+        const { resolved, unresolved } = parseOrder(text, menu);
 
-        if (OLLAMA_URL && OLLAMA_MODEL) {
-            const ai = await askAI(sender, rawText, menu);
-            console.log('AI response:', JSON.stringify(ai));
-
-            if (ai) {
-                addHistory(sender, 'assistant', ai.reply || '');
-
-                if (ai.intent === 'ORDER' && ai.items && ai.items.length) {
-                    // Map AI items to actual menu items
-                    const existingCart = session.cart || [];
-                    const readyItems   = [];
-                    const needsPortion = [];
-
-                    for (const aiItem of ai.items) {
-                        const match = findBestMatch(aiItem.name, menu);
-                        if (!match) continue;
-                        if (aiItem.portion) {
-                            const p = match.item.portions?.find(p =>
-                                p.name.toLowerCase().includes(aiItem.portion.toLowerCase()) ||
-                                aiItem.portion.toLowerCase().includes(p.name.toLowerCase())
-                            );
-                            if (p) { readyItems.push({ item: match.item, portion: p }); continue; }
-                        }
-                        if (match.item.portions && match.item.portions.length && !aiItem.portion) {
-                            needsPortion.push(match);
-                        } else {
-                            readyItems.push({ item: match.item, portion: match.portion });
-                        }
-                    }
-
-                    const cart = [...existingCart, ...readyItems];
-
-                    if (needsPortion.length) {
-                        const first = needsPortion.shift();
-                        sessions[sender] = { step: 'AWAITING_PORTION', pendingItem: first.item, pendingItems: needsPortion.map(e => e.item), cart };
-                        const opts = first.item.portions.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n');
-                        await sock.sendMessage(sender, { text: (ai.reply || '') + `\n\nWhich size for *${first.item.name}*?\n\n${opts}` });
-                    } else if (cart.length) {
-                        sessions[sender] = { step: 'AWAITING_DETAILS', cart };
-                        const { subtotal } = calcBill(cart);
-                        await sock.sendMessage(sender, {
-                            text: (ai.reply || `Got it!`) + `\n\n*Your Order:*\n${cartLines(cart)}\n\nSubtotal: ₹${subtotal}\n\n` +
-                                  `Please reply with your *Name, Phone Number & Address*.\n_Type *add* to add more | *cancel* to cancel_`
-                        });
-                    } else {
-                        await sock.sendMessage(sender, { text: ai.reply || "Sorry, I couldn't find that item. Type *menu* to see what's available." });
-                    }
-                    handled = true;
-
-                } else if (ai.intent === 'CANCEL') {
-                    delete sessions[sender]; delete chatHistory[sender];
-                    await sock.sendMessage(sender, { text: ai.reply || '❌ Order cancelled.' });
-                    handled = true;
-
-                } else if (ai.reply) {
-                    await sock.sendMessage(sender, { text: ai.reply });
-                    handled = true;
-                }
-            }
-        }
-
-        // ── Fallback: rule-based matching if AI unavailable ───────────────────
-        if (!handled) {
-            const { resolved, unresolved } = parseOrder(text, menu);
-            if (!resolved.length) {
-                await sock.sendMessage(sender, {
-                    text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_`
-                });
-                return;
-            }
+        if (resolved.length) {
             const existingCart = session.cart || [];
             const needsPortion = resolved.filter(e => e.needsPortion);
             const readyItems   = resolved.filter(e => !e.needsPortion);
             const cart         = [...existingCart, ...readyItems];
-            let warnMsg = unresolved.length ? `\n\n⚠️ Could not find: _${unresolved.join(', ')}_` : '';
+            const warnMsg      = unresolved.length ? `\n\n⚠️ Could not find: _${unresolved.join(', ')}_` : '';
 
             if (needsPortion.length) {
                 const first = needsPortion.shift();
@@ -500,7 +394,22 @@ async function startBot() {
                           `_Type *add* to add more | *empty* to clear | *cancel* to cancel_${warnMsg}`
                 });
             }
+            return;
         }
+
+        // ── AI fallback — only for questions/greetings (non-order messages) ───
+        if (OLLAMA_URL && OLLAMA_MODEL) {
+            const aiReply = await askAI(sender, rawText, menu);
+            if (aiReply) {
+                await sock.sendMessage(sender, { text: aiReply });
+                return;
+            }
+        }
+
+        // ── Final fallback ────────────────────────────────────────────────────
+        await sock.sendMessage(sender, {
+            text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + momos_`
+        });
     });
 }
 
