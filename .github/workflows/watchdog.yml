@@ -20,30 +20,57 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          # Check both in_progress AND queued (newly started jobs show as queued first)
+          # Get all in_progress runs
           IN_PROGRESS=$(curl -s \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/actions/workflows/main.yml/runs?per_page=5&status=in_progress" \
-            | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('workflow_runs',[])))")
+            "https://api.github.com/repos/$REPO/actions/workflows/main.yml/runs?per_page=10&status=in_progress" \
+            | python3 -c "import sys,json; runs=json.load(sys.stdin).get('workflow_runs',[]); print(len(runs)); [print(r['id']) for r in runs]" 2>/dev/null)
 
-          QUEUED=$(curl -s \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/actions/workflows/main.yml/runs?per_page=5&status=queued" \
-            | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('workflow_runs',[])))")
+          COUNT=$(echo "$IN_PROGRESS" | head -1)
+          echo "Bot workflows in_progress: $COUNT"
 
-          TOTAL=$((IN_PROGRESS + QUEUED))
-          echo "Bot runs — in_progress: $IN_PROGRESS, queued: $QUEUED, total: $TOTAL"
-
-          if [ "$TOTAL" = "0" ]; then
-            echo "Bot is NOT running — triggering restart..."
-            curl -s -X POST \
+          if [ "$COUNT" = "0" ]; then
+            # Check queued too
+            QUEUED=$(curl -s \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/actions/workflows/main.yml/dispatches" \
-              -d '{"ref":"main"}'
-            echo "Restart triggered!"
+              "https://api.github.com/repos/$REPO/actions/workflows/main.yml/runs?per_page=5&status=queued" \
+              | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('workflow_runs',[])))")
+
+            if [ "$QUEUED" = "0" ]; then
+              echo "Bot is NOT running — triggering restart..."
+              curl -s -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPO/actions/workflows/main.yml/dispatches" \
+                -d '{"ref":"main"}'
+              echo "Restart triggered!"
+            else
+              echo "Bot is queued — no action needed."
+            fi
+          elif [ "$COUNT" -gt "1" ]; then
+            # Multiple instances running — cancel all but the newest
+            echo "Multiple instances detected ($COUNT) — cancelling older ones..."
+            RUN_IDS=$(curl -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/actions/workflows/main.yml/runs?per_page=10&status=in_progress" \
+              | python3 -c "
+import sys,json
+runs = json.load(sys.stdin).get('workflow_runs',[])
+runs.sort(key=lambda r: r['created_at'], reverse=True)
+# Cancel all except the newest
+for r in runs[1:]:
+    print(r['id'])
+")
+            for RUN_ID in $RUN_IDS; do
+              echo "Cancelling run $RUN_ID..."
+              curl -s -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/cancel"
+            done
           else
-            echo "Bot is running — no action needed."
+            echo "Bot is running normally — no action needed."
           fi
