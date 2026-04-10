@@ -190,6 +190,10 @@ async function startBot() {
             if (!orders) return;
 
             for (const [key, order] of Object.entries(orders)) {
+                // Only process recent orders (last 24h) to avoid re-processing old ones
+                const age = Date.now() - new Date(order.timestamp || 0).getTime();
+                if (age > 24 * 60 * 60 * 1000) continue;
+
                 // Build JID — waNumber is 10-digit, needs 91 prefix for India
                 const rawNum = order.waNumber || order.phone || '';
                 const digits = rawNum.replace(/[^0-9]/g, '');
@@ -236,13 +240,16 @@ async function startBot() {
         }
 
         // ── EMPTY CART ────────────────────────────────────────────────────────
-        if (text === 'empty') {
-            if (session.cart && session.cart.length) {
-                delete sessions[sender];
-                await sock.sendMessage(sender, { text: '🗑️ Cart emptied. Type *menu* to start a new order.' });
-            } else {
-                await sock.sendMessage(sender, { text: 'Your cart is already empty. Type *menu* to browse.' });
-            }
+        if (text === 'empty' || text === 'clear cart' || text === 'new order') {
+            delete sessions[sender];
+            await sock.sendMessage(sender, { text: '🗑️ Cart cleared! Type *menu* to browse or just tell me what you want.' });
+            return;
+        }
+
+        // ── ADD MORE (while in AWAITING_DETAILS) ──────────────────────────────
+        if (text === 'add' && session.step === 'AWAITING_DETAILS') {
+            sessions[sender] = { step: 'ADDING', cart: session.cart };
+            await sock.sendMessage(sender, { text: '➕ What else would you like to add?' });
             return;
         }
 
@@ -368,34 +375,34 @@ async function startBot() {
         }
 
         // ── FREE-TEXT ORDER MATCHING ──────────────────────────────────────────
-        // If user is in AWAITING_DETAILS and types ADD, let them add more items
-        if (text === 'add' && session.step === 'AWAITING_DETAILS') {
-            sessions[sender] = { step: null, cart: session.cart };
-            await sock.sendMessage(sender, { text: '➕ Sure! What else would you like to add?\n_Type your item or type *empty* to clear cart._' });
-            return;
-        }
-
         const menu  = await getMenu();
         const { resolved, unresolved } = parseOrder(text, menu);
 
         if (!resolved.length) {
-            await sock.sendMessage(sender, {
-                text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + momos_`
-            });
+            // If stuck in AWAITING_DETAILS, remind user of options
+            if (session.step === 'AWAITING_DETAILS') {
+                await sock.sendMessage(sender, {
+                    text: `Please reply with your *Name, Phone Number & Delivery Address* to place the order.\n\nOr type *add* to add more items, *empty* to clear cart, *cancel* to cancel.`
+                });
+            } else {
+                await sock.sendMessage(sender, {
+                    text: `Type *menu* to see our full menu, then tell me what you want!\n_Example: cheese pizza small_\n_Example: veg burger + momos_`
+                });
+            }
             return;
         }
 
         // Warn about unrecognised items
         let warnMsg = '';
         if (unresolved.length) {
-            warnMsg = `\n\n⚠️ Could not find: _${unresolved.join(', ')}_\nPlease check the menu and try again.`;
+            warnMsg = `\n\n⚠️ Could not find: _${unresolved.join(', ')}_`;
         }
 
-        // Separate items that need portion selection
+        // Merge with existing cart (works whether session exists or not)
+        const existingCart = session.cart || [];
         const needsPortion = resolved.filter(e => e.needsPortion);
         const readyItems   = resolved.filter(e => !e.needsPortion);
-
-        const cart = [...(session.cart || []), ...readyItems];
+        const cart         = [...existingCart, ...readyItems];
 
         if (needsPortion.length) {
             const first = needsPortion.shift();
@@ -405,15 +412,14 @@ async function startBot() {
                 text: `Which size for *${first.item.name}*?\n\n${opts}${warnMsg}`
             });
         } else {
-            // All items ready — show cart and ask for details
-            sessions[sender] = { step: 'AWAITING_DETAILS', cart: [...(session.step === 'AWAITING_DETAILS' ? session.cart : []), ...cart.filter(i => !(session.step === 'AWAITING_DETAILS' && session.cart.includes(i)))] };
-            const { subtotal, gst, total } = calcBill(cart);
+            sessions[sender] = { step: 'AWAITING_DETAILS', cart };
+            const { subtotal } = calcBill(cart);
             await sock.sendMessage(sender, {
                 text: `🛒 *Order Summary:*\n${cartLines(cart)}\n\n` +
                       `Subtotal: ₹${subtotal}\n\n` +
                       `_+5% GST applicable. Our chef will contact you for payment._\n\n` +
-                      `Delivery charges will apply if the order value is below ₹375 or if the delivery location is beyond 3 km.\n\n` +
-                      `Please reply with your:\n*Name, Phone Number & Delivery Address*${warnMsg}`
+                      `Please reply with your:\n*Name, Phone Number & Delivery Address*\n\n` +
+                      `_Type *add* to add more items | *empty* to clear cart | *cancel* to cancel_${warnMsg}`
             });
         }
     });
