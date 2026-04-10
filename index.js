@@ -336,6 +336,9 @@ async function startBot() {
         browser: ['ScwOrder', 'Chrome', '1.0']
     });
 
+    let saveDebounce = null;
+    let connectedAt  = null;
+
     sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
         if (qr) {
             const b64 = (await QRCode.toDataURL(qr, { errorCorrectionLevel: 'H', scale: 8, margin: 2 }))
@@ -352,33 +355,39 @@ async function startBot() {
         }
         if (connection === 'open') {
             console.log('✅ ScwOrder Bot ONLINE');
-            await saveSessionToFirebase();
+            connectedAt = Date.now();
+            // Delay save to ensure all session files are fully written
+            setTimeout(saveSessionToFirebase, 5000);
         }
         if (connection === 'close') {
             const code    = lastDisconnect?.error?.output?.statusCode;
             const errMsg  = lastDisconnect?.error?.message || '';
-            const isBadSession = code === DisconnectReason.loggedOut ||
-                                 errMsg.includes('Bad MAC') ||
-                                 errMsg.includes('Bad mac') ||
-                                 code === 401 || code === 403 || code === 440;
 
-            if (isBadSession) {
-                console.log('[Session] Bad/expired session — clearing and regenerating QR...');
+            // Only clear session on genuine auth failures — NOT on normal disconnects
+            const isAuthFailure = code === DisconnectReason.loggedOut ||
+                                  code === 401 || code === 403;
+
+            if (isAuthFailure) {
+                console.log('[Session] Auth failure — clearing session for fresh QR...');
                 try { await fetch(`${FIREBASE_URL}/wa_session.json`, { method: 'DELETE' }); } catch(e) {}
                 try {
                     if (fs.existsSync(SESSION_DIR)) fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                 } catch(e) {}
+            } else {
+                console.log(`[Connection] Closed (code ${code}) — reconnecting...`);
             }
             setTimeout(startBot, 3000);
         }
     });
 
-    let saveDebounce = null;
     sock.ev.on('creds.update', async () => {
         saveCreds();
-        // Debounce Firebase save — avoid rapid writes causing session corruption
         clearTimeout(saveDebounce);
-        saveDebounce = setTimeout(saveSessionToFirebase, 3000);
+        saveDebounce = setTimeout(async () => {
+            if (connectedAt && Date.now() - connectedAt > 10000) {
+                await saveSessionToFirebase();
+            }
+        }, 5000);
     });
 
     // ── Order status poller ───────────────────────────────────────────────────
