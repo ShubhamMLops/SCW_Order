@@ -870,7 +870,17 @@ async function startBot() {
 
 startBot().catch(err => console.error('[Fatal]', err));
 
-// Keep process alive — log heartbeat every 30 min so GitHub Actions doesn't kill idle process
+// Keep process alive — log heartbeat every 30 min
 setInterval(() => {
     console.log('[Heartbeat] Bot running — ' + new Date().toLocaleString('en-IN'));
 }, 30 * 60 * 1000);
+
+// Self-exit before GitHub's 6h limit to avoid overlap with cron restart
+// Saves session cleanly then exits — cron will start a fresh job
+const maxMinutes = parseInt(process.env.MAX_RUNTIME_MINUTES || '340');
+setTimeout(async () => {
+    console.log(`[Self-exit] ${maxMinutes} min reached — saving session and exiting cleanly...`);
+    try { await saveSessionToFirebase(); } catch(e) {}
+    console.log('[Self-exit] Done. Cron will restart shortly.');
+    process.exit(0);
+}, maxMinutes * 60 * 1000);
