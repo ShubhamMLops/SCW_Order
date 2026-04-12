@@ -876,7 +876,6 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 
 // Self-exit before GitHub's 6h limit to avoid overlap with cron restart
-// Saves session cleanly then exits — cron will start a fresh job
 const maxMinutes = parseInt(process.env.MAX_RUNTIME_MINUTES || '340');
 setTimeout(async () => {
     console.log(`[Self-exit] ${maxMinutes} min reached — saving session and exiting cleanly...`);
@@ -884,3 +883,14 @@ setTimeout(async () => {
     console.log('[Self-exit] Done. Cron will restart shortly.');
     process.exit(0);
 }, maxMinutes * 60 * 1000);
+
+// Save session when GitHub Actions cancels the job (SIGTERM)
+// This ensures the next job can restore the session without needing a new QR
+async function gracefulShutdown(signal) {
+    console.log(`[Shutdown] ${signal} received — saving session before exit...`);
+    try { await saveSessionToFirebase(); } catch(e) {}
+    console.log('[Shutdown] Session saved. Goodbye.');
+    process.exit(0);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
