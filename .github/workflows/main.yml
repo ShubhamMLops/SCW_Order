@@ -3,14 +3,17 @@ name: ScwOrder-WhatsApp-Bot
 on:
   workflow_dispatch:
   schedule:
-    # Safety net only — runs if the job crashed/was cancelled
-    # Normal operation: bot restarts itself internally before 6h limit
     - cron: '0 */5 * * *'
+
+# Cancel any running instance when a new one starts — prevents 440 conflicts
+concurrency:
+  group: scworder-bot
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 350   # 5h 50min — bot exits itself at 5h 45min
+    timeout-minutes: 350
 
     steps:
       - name: Checkout Code
@@ -29,6 +32,5 @@ jobs:
           FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
           NODE_NO_WARNINGS: 1
-          # Bot will exit cleanly after this many minutes, then cron restarts it
           MAX_RUNTIME_MINUTES: '340'
         run: node --no-warnings index.js
