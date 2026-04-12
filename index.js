@@ -470,12 +470,29 @@ async function startBot() {
         } catch (e) { console.log('[Poll] Error:', e.message); }
     }, 5000);
 
-    // ── Message handler ───────────────────────────────────────────────────────
     let sessionSaveTimer = null;
     function debounceSaveSessions() {
         clearTimeout(sessionSaveTimer);
         sessionSaveTimer = setTimeout(saveSessions, 2000);
     }
+
+    // ── Cart expiry — clear inactive carts every minute ──────────────────────
+    const CART_TIMEOUT_MS = 5 * 60 * 1000; // 10 minutes
+    setInterval(async () => {
+        const now = Date.now();
+        for (const [sender, session] of Object.entries(sessions)) {
+            if (!session.cart?.length) continue;
+            const last = session.lastActivity || 0;
+            if (now - last > CART_TIMEOUT_MS) {
+                delete sessions[sender];
+                try {
+                    await sock.sendMessage(sender, {
+                        text: '🛒 Your cart has been cleared due to 05 minutes of inactivity.\n\nType *menu* to start a new order!'
+                    });
+                } catch(e) {}
+            }
+        }
+    }, 60 * 1000);
 
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
@@ -488,7 +505,9 @@ async function startBot() {
         const text    = rawText.toLowerCase().trim();
         const session = sessions[sender] || {};
         const send    = t => {
-            debounceSaveSessions(); // save cart state after every response
+            // Update last activity timestamp on every interaction
+            if (sessions[sender]) sessions[sender].lastActivity = Date.now();
+            debounceSaveSessions();
             return sock.sendMessage(sender, { text: t });
         };
 
