@@ -5,7 +5,7 @@ on:
   schedule:
     - cron: '0 */5 * * *'
 
-# Cancel any running instance when a new one starts — prevents 440 conflicts
+# When a new run starts, cancel the old one — but the old job saves session first via SIGTERM handler
 concurrency:
   group: scworder-bot
   cancel-in-progress: true
