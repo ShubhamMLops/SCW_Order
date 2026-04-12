@@ -351,13 +351,19 @@ async function getStoreClosedMessage() {
     try {
         const res  = await fetch(`${FIREBASE_URL}/settings.json`);
         const data = await res.json();
-        const open = data?.openTime || '09:00';
-        const [h, m] = open.split(':').map(Number);
-        const ampm = h >= 12 ? 'PM' : 'AM';
-        const h12  = h % 12 || 12;
-        return `🔒 *We're currently closed.*\n\nWe'll be open at *${h12}:${String(m).padStart(2,'0')} ${ampm}*.\n\nSee you then! 🙏`;
+        const openTime  = data?.openTime  || '09:00';
+        const closeTime = data?.closeTime || '22:00';
+
+        function fmt(t) {
+            const [h, m] = t.split(':').map(Number);
+            const ampm = h >= 12 ? 'PM' : 'AM';
+            const h12  = h % 12 || 12;
+            return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
+        }
+
+        return `🔒 *Our outlet is currently closed.*\n\nWe are open from *${fmt(openTime)}* to *${fmt(closeTime)}*.\n\nKindly place your order during our working hours. Thank you! 🙏`;
     } catch(e) {
-        return `🔒 *We're currently closed.* Please check back later!`;
+        return `🔒 *Our outlet is currently closed.* Please check back later!`;
     }
 }
 
@@ -485,16 +491,9 @@ async function startBot() {
 
         console.log(`[${sender.split('@')[0]}] ${rawText}`);
 
-        // ── Store timing check — block orders if closed ───────────────────────
-        // Always allow: cancel, cart, status queries (not food orders)
-        const isOrderIntent = !['cancel','empty','clear','cart','my cart','bag',
-            'proceed','done','checkout','add','add more','menu','price','list'].includes(text) &&
-            !/^(hi|hello|hey|hii|helo|namaste|hola|start|hy|hlo)$/i.test(text) &&
-            session.step !== 'AWAITING_DETAILS' &&
-            session.step !== 'AWAITING_PORTION' &&
-            session.step !== 'AWAITING_CLARIFICATION';
-
-        if (isOrderIntent && !(await isStoreOpen())) {
+        // ── Store timing check — block ALL messages if closed ─────────────────
+        // Only allow: cancel (to clear stuck sessions)
+        if (text !== 'cancel' && !(await isStoreOpen())) {
             return send(await getStoreClosedMessage());
         }
 
