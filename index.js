@@ -364,13 +364,11 @@ async function getStoreClosedMessage() {
             return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
         }
 
-        // Custom reason from admin
-        const reason = data?.closeReason?.trim();
+        // Custom reason only shown when admin force-closed the store
+        const reason = (data?.forceClose === true && data?.closeReason?.trim())
+            ? data.closeReason.trim()
+            : null;
         const reasonLine = reason ? `\n\n_${reason}_` : '';
-
-        // Show current IST time in message for context
-        const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-        const nowFmt = nowIST.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
 
         return `🔒 *Our outlet is currently closed.*${reasonLine}\n\nWe are open from *${fmt(openTime)}* to *${fmt(closeTime)}* (IST).\n\nKindly place your order during our working hours. Thank you! 🙏`;
     } catch(e) {
