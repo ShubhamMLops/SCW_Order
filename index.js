@@ -323,10 +323,10 @@ async function isStoreOpen() {
     try {
         const res  = await fetch(`${FIREBASE_URL}/settings.json`);
         const data = await res.json();
-        if (!data) return true; // default open if no settings
+        if (!data) return true;
 
-        // If admin explicitly closed the store
-        if (data.storeOpen === false) return false;
+        // Force close overrides timings
+        if (data.forceClose === true) return false;
 
         // Check time window
         if (data.openTime && data.closeTime) {
@@ -339,12 +339,11 @@ async function isStoreOpen() {
             if (closeMin > openMin) {
                 return nowMin >= openMin && nowMin < closeMin;
             } else {
-                // Overnight (e.g. 22:00 – 02:00)
                 return nowMin >= openMin || nowMin < closeMin;
             }
         }
         return true;
-    } catch(e) { return true; } // fail open
+    } catch(e) { return true; }
 }
 
 async function getStoreClosedMessage() {
@@ -361,7 +360,11 @@ async function getStoreClosedMessage() {
             return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
         }
 
-        return `🔒 *Our outlet is currently closed.*\n\nWe are open from *${fmt(openTime)}* to *${fmt(closeTime)}*.\n\nKindly place your order during our working hours. Thank you! 🙏`;
+        // Custom reason from admin
+        const reason = data?.closeReason?.trim();
+        const reasonLine = reason ? `\n\n_${reason}_` : '';
+
+        return `🔒 *Our outlet is currently closed.*${reasonLine}\n\nWe are open from *${fmt(openTime)}* to *${fmt(closeTime)}*.\n\nKindly place your order during our working hours. Thank you! 🙏`;
     } catch(e) {
         return `🔒 *Our outlet is currently closed.* Please check back later!`;
     }
