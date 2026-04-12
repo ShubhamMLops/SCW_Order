@@ -328,21 +328,25 @@ async function isStoreOpen() {
         // Force close overrides timings
         if (data.forceClose === true) return false;
 
-        // Check time window
-        if (data.openTime && data.closeTime) {
-            const now   = new Date();
-            const [oh, om] = data.openTime.split(':').map(Number);
-            const [ch, cm] = data.closeTime.split(':').map(Number);
-            const nowMin  = now.getHours() * 60 + now.getMinutes();
-            const openMin = oh * 60 + om;
-            const closeMin= ch * 60 + cm;
-            if (closeMin > openMin) {
-                return nowMin >= openMin && nowMin < closeMin;
-            } else {
-                return nowMin >= openMin || nowMin < closeMin;
-            }
+        // If no timings set, default open
+        if (!data.openTime || !data.closeTime) return true;
+
+        // Use IST (UTC+5:30) — admin sets timings in Indian time
+        const nowIST   = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+        const nowMin   = nowIST.getHours() * 60 + nowIST.getMinutes();
+
+        const [oh, om] = data.openTime.split(':').map(Number);
+        const [ch, cm] = data.closeTime.split(':').map(Number);
+        const openMin  = oh * 60 + om;
+        const closeMin = ch * 60 + cm;
+
+        if (closeMin > openMin) {
+            // Normal window e.g. 09:00 – 22:00
+            return nowMin >= openMin && nowMin < closeMin;
+        } else {
+            // Overnight window e.g. 22:00 – 02:00
+            return nowMin >= openMin || nowMin < closeMin;
         }
-        return true;
     } catch(e) { return true; }
 }
 
@@ -364,7 +368,11 @@ async function getStoreClosedMessage() {
         const reason = data?.closeReason?.trim();
         const reasonLine = reason ? `\n\n_${reason}_` : '';
 
-        return `🔒 *Our outlet is currently closed.*${reasonLine}\n\nWe are open from *${fmt(openTime)}* to *${fmt(closeTime)}*.\n\nKindly place your order during our working hours. Thank you! 🙏`;
+        // Show current IST time in message for context
+        const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+        const nowFmt = nowIST.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+        return `🔒 *Our outlet is currently closed.*${reasonLine}\n\nWe are open from *${fmt(openTime)}* to *${fmt(closeTime)}* (IST).\n\nKindly place your order during our working hours. Thank you! 🙏`;
     } catch(e) {
         return `🔒 *Our outlet is currently closed.* Please check back later!`;
     }
