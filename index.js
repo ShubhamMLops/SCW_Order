@@ -489,7 +489,8 @@ async function startBot() {
             return sock.sendMessage(sender, { text: t });
         };
 
-        console.log(`[${sender.split('@')[0]}] ${rawText}`);
+        // Log only message length — never log phone numbers or message content
+        console.log(`[Msg] ${text.length} chars`);
 
         // ── Store timing check — block ALL messages if closed ─────────────────
         // Only allow: cancel (to clear stuck sessions)
@@ -736,7 +737,7 @@ async function startBot() {
                         method:    'WhatsApp',
                         timestamp: new Date().toISOString()
                     })
-                }).catch(e => console.log('[Order] Firebase error:', e.message));
+                }).catch(() => console.log('[Order] Firebase error — order may not have saved'));
 
                 delete sessions[sender];
                 return send(
