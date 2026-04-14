@@ -8,9 +8,11 @@ const fs     = require('fs');
 const path   = require('path');
 
 const FIREBASE_URL  = process.env.FIREBASE_URL;
-const ADMIN_EMAIL   = process.env.ADMIN_EMAIL;   // set in GitHub Secrets
-const SMTP_USER     = process.env.SMTP_USER;     // Gmail address
-const SMTP_PASS     = process.env.SMTP_PASS;     // Gmail app password
+const ADMIN_EMAIL   = process.env.ADMIN_EMAIL;
+const SMTP_USER     = process.env.SMTP_USER;
+const SMTP_PASS     = process.env.SMTP_PASS;
+const SMTP_HOST     = process.env.SMTP_HOST || 'smtp.gmail.com';
+const SMTP_PORT     = parseInt(process.env.SMTP_PORT || '465');
 const DELIVERY_FEE  = 50;
 const GST_RATE      = 0.05;
 const FREE_DELIVERY = 375;
@@ -97,6 +99,14 @@ async function getMenu() {
             .map(k => ({ id: k, ...data[k], portions: data[k].portions || null }))
             .filter(d => !d.outOfStock);
     } catch (e) { console.error('[Menu] Fetch error:', e); return []; }
+}
+
+async function getMenuImageUrl() {
+    try {
+        const res  = await fetch(`${FIREBASE_URL}/settings/menuImageUrl.json`);
+        const url  = await res.json();
+        return (url && typeof url === 'string' && url.startsWith('http')) ? url : null;
+    } catch { return null; }
 }
 
 // ── Menu text — numbered list ─────────────────────────────────────────────────
@@ -388,12 +398,10 @@ async function sendOrderEmail(order, cartItems) {
             const price = e.portion ? e.portion.price : (e.item.price || 0);
             return `  • ${name} — Rs.${price}`;
         }).join('\n');
-
         const subtotal = cartItems.reduce((s, e) =>
             s + parseFloat(e.portion ? e.portion.price : (e.item.price || 0)), 0);
-
         const subject = `New Order — Rs.${subtotal.toFixed(0)} — ${order.phone}`;
-        const body    =
+        const body =
             `New WhatsApp Order Received!\n\n` +
             `Time    : ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}\n` +
             `Phone   : ${order.phone}\n` +
@@ -402,16 +410,14 @@ async function sendOrderEmail(order, cartItems) {
             `Subtotal: Rs.${subtotal.toFixed(0)}\n` +
             `Note    : +5% GST applicable\n\n` +
             `Open admin panel to accept the order.`;
-
         await smtpSend(ADMIN_EMAIL, subject, body);
-    } catch(e) {}
+    } catch(e) { /* silent */ }
 }
 
 function smtpSend(to, subject, body) {
     return new Promise((resolve, reject) => {
         const tls = require('tls');
-        const socket = tls.connect(465, 'smtp.gmail.com', { rejectUnauthorized: false }, () => {
-            const chunks = [];
+        const socket = tls.connect(SMTP_PORT, SMTP_HOST, { rejectUnauthorized: false }, () => {
             let buf = '';
             const read = (cb) => {
                 const handler = (d) => {
@@ -422,9 +428,8 @@ function smtpSend(to, subject, body) {
                 socket.once('data', handler);
             };
             const cmd = (c) => socket.write(c + '\r\n');
-
             read(() => {
-                cmd(`EHLO smtp.gmail.com`);
+                cmd(`EHLO ${SMTP_HOST}`);
                 read(() => {
                     cmd(`AUTH LOGIN`);
                     read(() => {
@@ -440,11 +445,8 @@ function smtpSend(to, subject, body) {
                                         cmd('DATA');
                                         read(() => {
                                             socket.write(
-                                                `From: ScwOrder <${SMTP_USER}>\r\n` +
-                                                `To: <${to}>\r\n` +
-                                                `Subject: ${subject}\r\n` +
-                                                `MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n` +
-                                                `${body}\r\n.\r\n`
+                                                `From: ScwOrder <${SMTP_USER}>\r\nTo: <${to}>\r\nSubject: ${subject}\r\n` +
+                                                `MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}\r\n.\r\n`
                                             );
                                             read(() => { cmd('QUIT'); socket.destroy(); resolve(); });
                                         });
@@ -622,8 +624,15 @@ async function startBot() {
         if (/^(menu|price|prices|list|items)$/.test(text)) {
             const menu = await getMenu();
             const { text: menuText, indexMap } = buildMenuText(menu);
-            // Store indexMap in session so user can order by number
             sessions[sender] = { ...(sessions[sender] || {}), indexMap };
+            // Send menu image first if admin has uploaded one
+            const menuImgUrl = await getMenuImageUrl();
+            if (menuImgUrl) {
+                await sock.sendMessage(sender, {
+                    image: { url: menuImgUrl },
+                    caption: '🍽️ *ScwOrder Menu*\n\nSee full menu with prices below 👇'
+                });
+            }
             return send(menuText);
         }
         if (/^(cart|my cart|bag|view cart|show cart|mycart)$/.test(text)) {
