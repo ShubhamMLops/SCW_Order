@@ -13,6 +13,7 @@ const SMTP_USER     = process.env.SMTP_USER;
 const SMTP_PASS     = process.env.SMTP_PASS;
 const SMTP_HOST     = process.env.SMTP_HOST || 'smtp.gmail.com';
 const SMTP_PORT     = parseInt(process.env.SMTP_PORT || '465');
+const STORE_NAME    = process.env.STORE_NAME || 'Diamond';
 const DELIVERY_FEE  = 50;
 const GST_RATE      = 0.05;
 const FREE_DELIVERY = 375;
@@ -400,9 +401,10 @@ async function sendOrderEmail(order, cartItems) {
         }).join('\n');
         const subtotal = cartItems.reduce((s, e) =>
             s + parseFloat(e.portion ? e.portion.price : (e.item.price || 0)), 0);
-        const subject = `New Order — Rs.${subtotal.toFixed(0)} — ${order.phone}`;
+        const subject = `[${STORE_NAME}] New Order — Rs.${subtotal.toFixed(0)} — ${order.phone}`;
         const body =
-            `New WhatsApp Order Received!\n\n` +
+            `${STORE_NAME} — New WhatsApp Order Received!\n` +
+            `${'='.repeat(40)}\n\n` +
             `Time    : ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}\n` +
             `Phone   : ${order.phone}\n` +
             `Address : ${order.address}\n\n` +
@@ -445,7 +447,7 @@ function smtpSend(to, subject, body) {
                                         cmd('DATA');
                                         read(() => {
                                             socket.write(
-                                                `From: ScwOrder <${SMTP_USER}>\r\nTo: <${to}>\r\nSubject: ${subject}\r\n` +
+                                                `From: ${STORE_NAME} <${SMTP_USER}>\r\nTo: <${to}>\r\nSubject: ${subject}\r\n` +
                                                 `MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}\r\n.\r\n`
                                             );
                                             read(() => { cmd('QUIT'); socket.destroy(); resolve(); });
